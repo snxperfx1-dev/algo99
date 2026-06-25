@@ -3739,6 +3739,7 @@ input bool          InpShowStatus       = true;         // Show status panel (Co
 input bool          InpDebugEntries     = true;         // Print full entry reasoning to the Experts log (why each trade was taken)
 input bool          InpDebugBlocks      = false;        // Also log why entries are BLOCKED (verbose - maps near-misses)
 input bool          InpDebugExits       = true;         // Print why each trade was CLOSED / its stop moved (maps early-exit & stop problems)
+input bool          InpDebugMgmt        = true;         // Per-bar management heartbeat: dumps mi / lots / favPts / partial-flags (diagnose 'no partials/trailing')
 
 input group "Letra37 EA - Live Safety"
 input bool   InpVerifyTradeAllowed = true;  // LIVE: only place NEW orders when the terminal is connected and algo-trading is permitted (terminal + account + EA)
@@ -5053,6 +5054,23 @@ void ManagePositions()
       //==============================================================
       // favPts = favorable excursion in PRICE points
       double favPts=(dir==1?(mkt-openP):(openP-mkt));
+      //--- DIAGNOSTIC HEARTBEAT: once per bar, dump why partials/trailing may not fire ---
+      if(InpDebugMgmt){
+         MqlDateTime _hbt; TimeToStruct(TimeCurrent(),_hbt);
+         if(_hbt.sec<3){
+            double _hbCloseL1=NormalizeLot(posLots*InpPartL1Frac);
+            Print("=== MGMT #",tk," [",MgTypeLabel(mi),"] mi=",mi,
+                  " RPartials=",(InpRPartials?"Y":"N"),
+                  " lots=",DoubleToString(posLots,2),
+                  " close20%=",DoubleToString(_hbCloseL1,2),
+                  " canSubdiv=",(_hbCloseL1<posLots?"Y":"N"),
+                  " favPts=",DoubleToString(favPts,1),
+                  " P1=",(mi>=0&&gMgP1Done[mi]?"Y":"N"),
+                  " P4=",(mi>=0&&gMgP4Done[mi]?"Y":"N"),
+                  " trail=",(mi>=0&&gMgTrailing[mi]?"Y":"N"),
+                  " R=",DoubleToString(rMult,2));
+         }
+      }
       if(InpRPartials && mi>=0 && posLots>0 && favPts>0){
          double minLotV=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
          double closeL1=NormalizeLot(posLots*InpPartL1Frac); if(closeL1<=0) closeL1=minLotV;
