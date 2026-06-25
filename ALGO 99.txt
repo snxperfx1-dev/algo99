@@ -4503,12 +4503,9 @@ void TryEnter()
          double askD=sym.Ask(), bidD=sym.Bid();
          double entryD=(dir==1?askD:bidD);
          gRecSizeMult=RecSizeMult();
-         // -- SL SELECTION -----------------------------------------------------------------------
-         // ALL death entries (D=2/4 CAMP and D=3/4 MOM) now use ComputeMomentumSL.
-         // Applies to both: M5 post-impulse pivot finds the tightest relevant structure,
-         // avoiding the spike-bottom problem where M15 structural swing places SLs at
-         // liquidity-sweep wicks 50-130pts away from the actual entry invalidation point.
-         slD=ComputeMomentumSL(dir,entryD);
+         // SL from structural invalidation (origin / anchor / key swing — the genuine level)
+         // Safety layers on top: hard cap blocks extreme SLs, lot enforcer guarantees 1% risk
+         double slD=ComputeStructureSL(dir,entryD,false,false);
          {
             double _slDist=MathAbs(entryD-slD);
             if(_slDist>InpMomSLHardBlock*_Point){
@@ -4679,8 +4676,8 @@ void TryEnter()
    double ask=sym.Ask(), bid=sym.Bid();
    double entry=(dir==1?ask:bid);
    gRecSizeMult=RecSizeMult();          // recursion-size-aware stop sizing (compression -> loop size)
-   double slBase=ComputeMomentumSL(dir,entry);   // M5 post-impulse structure SL — applies to all entry types
-   {  // hard cap: block if SL still exceeds maximum permitted distance
+   double slBase=ComputeStructureSL(dir,entry,fuEntry,mtfEntry);   // structural invalidation SL
+   {  // hard cap + lot enforcement applies to all entry types
       double _slDist=MathAbs(entry-slBase);
       if(_slDist>InpMomSLHardBlock*_Point){ gEntryBlock="SL "+DoubleToString(_slDist/_Point,1)+"pt > "+DoubleToString(InpMomSLHardBlock,0)+"pt hard cap"; return; }
    }
@@ -4709,7 +4706,7 @@ void TryEnter()
    bool ok=false;
    if(InpUseLimitEntry && !naf(cur_doeEntryMid)){
       double lim=NormPrice(cur_doeEntryMid);
-      double slL=ComputeMomentumSL(dir,lim);
+      double slL=ComputeStructureSL(dir,lim,fuEntry,mtfEntry);
       double tpL=ComputeTP(dir,lim,slL);
       double lotL=CalcLot(lim,slL);
       datetime exp=(InpPendingExpiryBars>0)?(TimeCurrent()+(datetime)(InpPendingExpiryBars*PeriodSeconds(_Period))):0;
