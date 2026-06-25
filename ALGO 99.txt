@@ -4604,7 +4604,15 @@ void TryEnter()
          string cmtD=InpComment+" DEATH"+IntegerToString(cur_ownerDeathSignals)+" "+_typeTx;
          bool okD=(dir==1)?trade.Buy(lotD,_Symbol,askD,slD,0.0,cmtD):trade.Sell(lotD,_Symbol,bidD,slD,0.0,cmtD);
          if(!okD && MktClosed()) return;
-         MgRegister(trade.ResultOrder(),slD,NA,dir,true,_tradeType,cur_ownerDeathSignals,OwnerRankOf(cur_curveOwner),MathAbs(entryD-slD));
+         //--- register the ACTUAL position ticket (robust on netting AND hedging) so partials/trailing always bind ---
+         ulong _ptD=0;
+         for(int q=PositionsTotal()-1;q>=0;q--){
+            ulong pq=PositionGetTicket(q);
+            if(pq==0) continue;
+            if(PositionGetInteger(POSITION_MAGIC)==(long)InpMagic && PositionGetString(POSITION_SYMBOL)==_Symbol){ _ptD=pq; break; }
+         }
+         if(_ptD==0) _ptD=trade.ResultOrder();   // fallback
+         MgRegister(_ptD,slD,NA,dir,true,_tradeType,cur_ownerDeathSignals,OwnerRankOf(cur_curveOwner),MathAbs(entryD-slD));
          gTradesToday++; gEntryBlock="ENTERED DEATH"+IntegerToString(cur_ownerDeathSignals)+" "+_typeTx;
          if(cur_ownerDeathSignals==3 && _tradeType==1) gMomD3Today++;   // SOLUTION 10 counter
          if(InpDebugEntries) Print("=== ENTRY DEATH ",(dir==1?"BUY":"SELL")," D=",cur_ownerDeathSignals,"/4 type=",_typeTx," @",DoubleToString(entryD,_Digits)," SL=",DoubleToString(slD,_Digits)," lot=",DoubleToString(lotD,2)," sizeMult=",DoubleToString(gSizeMult,2),(_chop?" [CHOP]":""));
