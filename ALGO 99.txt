@@ -1438,7 +1438,7 @@ void ProcessBar(const int i,const double &o[],const double &h[],const double &l[
    double waveTotalRange=!naf(originToExtreme)?originToExtreme:atr*5.0;
    double currentToFlipMid=(!naf(g_flipTop)&&!naf(g_flipBot))?MathAbs(cl-(g_flipTop+g_flipBot)/2.0):atr*4.0;
    double currentToExtreme=direction==1?MathAbs(nz(g_cycleHigh,cl+atr)-cl):MathAbs(cl-nz(g_cycleLow,cl-atr));
-   double _posNormDen=fmax2(waveTotalRange,atr*0.5);
+   double _posNormDen=fmax2(waveTotalRange,fmax2(atr*0.5,1e-10));  // guard: neither leg may be zero (originToExtreme=0 on fresh spawn + atr=0 on flat first bar = crash)
    double posDistToCreation   =fmin2(currentToExtreme/_posNormDen*100.0,100.0);
    double posDistToDemand     =fmin2(currentToFlipMid/_posNormDen*100.0,100.0);
 
@@ -4416,7 +4416,22 @@ void TryEnter()
          string cmtD=InpComment+" DEATH"+IntegerToString(cur_ownerDeathSignals)+" "+_typeTx;
          bool okD=(dir==1)?trade.Buy(lotD,_Symbol,askD,slD,0.0,cmtD):trade.Sell(lotD,_Symbol,bidD,slD,0.0,cmtD);
          if(!okD && MktClosed()) return;
-         MgRegister(trade.ResultOrder(),slD,NA,dir,true,_tradeType);
+         //--- BUGFIX: register against the REAL position ticket, not trade.ResultOrder() (order ticket).
+         //  MgCleanup uses posinfo.SelectByTicket() which is by POSITION ticket -- a mismatched
+         //  registration is wiped on the very next tick, after which ManagePositions() finds mi=-1
+         //  and silently skips ALL profit management (L1-L5 partials, BE, QProt, $7K trail).
+         //  Mirror the normal path: scan PositionsTotal() to find the just-opened position.
+         if(okD){
+            for(int _qd=PositionsTotal()-1;_qd>=0;_qd--){
+               ulong _ptd=PositionGetTicket(_qd);
+               if(_ptd==0) continue;
+               if(PositionGetInteger(POSITION_MAGIC)==(long)InpMagic && PositionGetString(POSITION_SYMBOL)==_Symbol){
+                  double _psld=PositionGetDouble(POSITION_SL);
+                  MgRegister(_ptd,_psld,NA,dir,true,_tradeType);
+                  break;
+               }
+            }
+         }
          gTradesToday++; gEntryBlock="ENTERED DEATH"+IntegerToString(cur_ownerDeathSignals)+" "+_typeTx;
          if(InpDebugEntries) Print("=== ENTRY DEATH ",(dir==1?"BUY":"SELL")," D=",cur_ownerDeathSignals,"/4 type=",_typeTx," @",DoubleToString(entryD,_Digits)," SL=",DoubleToString(slD,_Digits));
          return;
@@ -4820,15 +4835,13 @@ void ManagePositions()
       } // end quality protection block
 
       //==============================================================
-      // PROFIT MANAGEMENT -- 5 levels, 20% each
-      // $900 -> 20% + breakeven SL
-      // $2300 -> 20%
-      // $4400 -> 20%
-      // $1600 -> 20%
-      // $3300 -> 20%
-      // $4500 -> 20%
-      // $6000 -> 20%
-      // $7000+ -> aggressive swing trail
+      // PROFIT MANAGEMENT -- 5 levels, 20% of remaining each
+      // L1  $900   -> close 20% + move SL to breakeven
+      // L2  $1600  -> close 20% of remaining
+      // L3  $3300  -> close 20% of remaining
+      // L4  $4500  -> close 20% of remaining
+      // L5  $6000  -> close 20% of remaining
+      //     $7000+ -> aggressive 2-bar swing trail on remainder
       //==============================================================
       // posProfit and posLots already computed above in quality block
       if(mi>=0 && posLots>0 && posProfit>0){
