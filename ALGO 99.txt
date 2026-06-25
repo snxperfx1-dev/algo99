@@ -4820,15 +4820,13 @@ void ManagePositions()
       } // end quality protection block
 
       //==============================================================
-      // PROFIT MANAGEMENT -- 5 levels, 20% each
-      // $900 -> 20% + breakeven SL
-      // $2300 -> 20%
-      // $4400 -> 20%
-      // $1600 -> 20%
-      // $3300 -> 20%
-      // $4500 -> 20%
-      // $6000 -> 20%
-      // $7000+ -> aggressive swing trail
+      // PROFIT MANAGEMENT -- 5 levels, 20% of remaining each
+      // L1  $900   -> close 20% + move SL to breakeven
+      // L2  $1600  -> close 20% of remaining
+      // L3  $3300  -> close 20% of remaining
+      // L4  $4500  -> close 20% of remaining
+      // L5  $6000  -> close 20% of remaining
+      //     $7000+ -> aggressive 2-bar swing trail on remainder
       //==============================================================
       // posProfit and posLots already computed above in quality block
       if(mi>=0 && posLots>0 && posProfit>0){
