@@ -4508,8 +4508,8 @@ void TryEnter()
          double slD=ComputeStructureSL(dir,entryD,false,false);
          {
             double _slDist=MathAbs(entryD-slD);
-            if(_slDist>InpMomSLHardBlock*_Point){
-               gEntryBlock="SL "+DoubleToString(_slDist/_Point,1)+"pt > "+DoubleToString(InpMomSLHardBlock,0)+"pt hard cap";
+            if(_slDist>InpMomSLHardBlock){
+               gEntryBlock="SL "+DoubleToString(_slDist,1)+"pt > "+DoubleToString(InpMomSLHardBlock,0)+"pt hard cap";
                return;
             }
          }
@@ -4679,7 +4679,7 @@ void TryEnter()
    double slBase=ComputeStructureSL(dir,entry,fuEntry,mtfEntry);   // structural invalidation SL
    {  // hard cap + lot enforcement applies to all entry types
       double _slDist=MathAbs(entry-slBase);
-      if(_slDist>InpMomSLHardBlock*_Point){ gEntryBlock="SL "+DoubleToString(_slDist/_Point,1)+"pt > "+DoubleToString(InpMomSLHardBlock,0)+"pt hard cap"; return; }
+      if(_slDist>InpMomSLHardBlock){ gEntryBlock="SL "+DoubleToString(_slDist,1)+"pt > "+DoubleToString(InpMomSLHardBlock,0)+"pt hard cap"; return; }
    }
    double lot=CalcLot(entry,slBase);
    // Explicit lot enforcement: guarantee risk-% regardless of SL width (mirrors death fast-path)
