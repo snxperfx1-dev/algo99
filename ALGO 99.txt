@@ -3821,6 +3821,17 @@ input int    InpNewsMinEnd       = 30;    // News window: end minute
 input double InpBEAtrBuf         = 0.30; // Breakeven SL buffer for MOMENTUM trades (xATR). Old=1pt, now ~1-2 pts breathing room
 input double InpBEAtrCampaign    = 0.50; // Breakeven SL buffer for CAMPAIGN trades (Asia/Close D=2/4 - wider: long slow builds wick deeper)
 input int    InpCampaignProtMin  = 120;  // QProt: age threshold (minutes) for CAMPAIGN trades before protection fires (vs InpQProtMinutes for momentum)
+// --- Partial + trail thresholds (R-multiples of initial risk) ---
+// Using R instead of fixed £ amounts so management scales across all account sizes.
+// At 1R the trade has moved exactly as far as the stop loss in the favourable direction.
+// Defaults calibrated to match the original £900/£1600/£3300/£4500/£6000/£7000 levels
+// on a 100K account trading 2 lots with a $10 SL (1R ≈ £1,575 in that scenario).
+input double InpL1R              = 0.5;  // Partial L1: close 20% + move BE  (0.5R ≈ £785 on 100K/2lot/$10SL)
+input double InpL2R              = 1.0;  // Partial L2: close 20%            (1.0R ≈ £1,575)
+input double InpL3R              = 2.0;  // Partial L3: close 20%            (2.0R ≈ £3,150)
+input double InpL4R              = 3.0;  // Partial L4: close 20%            (3.0R ≈ £4,724)
+input double InpL5R              = 4.0;  // Partial L5: close 20%            (4.0R ≈ £6,299)
+input double InpTrailR           = 5.0;  // Trail activates                  (5.0R ≈ £7,874)
 
 //==================================================================
 // EA GLOBALS
@@ -4046,8 +4057,8 @@ int OnInit()
                (_live?"LIVE/DEMO":"STRATEGY TESTER"),_Symbol,EnumToString(_Period));
    PrintFormat("    RISK   : mode=%s  risk=%.2f%%  maxLot=%.2f  maxTrades/day=%d",
                (InpLotMode==LOT_RISK_PCT?"RISK%":"FIXED"),InpRiskPercent,InpMaxLot,InpMaxTradesPerDay);
-   PrintFormat("    STOPS  : hardSL=ON (structure, minFloor %.1f ATR)  TP=NONE (ownership exits only)  trail=swing@$7K  BE=@$900(buf%.1fATR)  partial=5-levels($900/$1600/$3300/$4500/$6000)",
-               InpMinSLAtr, InpBEAtrBuf);
+   PrintFormat("    STOPS  : hardSL=ON (structure, minFloor %.1f ATR)  TP=NONE (ownership exits only)  trail=swing@%.1fR  BE=@%.1fR(buf%.1fATR)  partial=5-levels(%.1f/%.1f/%.1f/%.1f/%.1fR)",
+               InpMinSLAtr, InpTrailR, InpL1R, InpBEAtrBuf, InpL1R, InpL2R, InpL3R, InpL4R, InpL5R);
    PrintFormat("    EXITS  : ownerTransfer=%s(%.0f%%)  termComplete=%s  p2Choch=%s(%d bars)  exhaustion=%s",
                (InpExitOnOwnerTransfer?"on":"off"),InpOwnerTransferThresh,
                (InpExitOnTermComplete?"on":"off"),
@@ -4843,21 +4854,20 @@ void ManagePositions()
       // $3300 -> 20%
       // $4500 -> 20%
       // $6000 -> 20%
-      // $7000+ -> aggressive swing trail
+      // R-multiple + trail thresholds (scale with account size / lot size / SL width)
       //==============================================================
       // posProfit and posLots already computed above in quality block
       if(mi>=0 && posLots>0 && posProfit>0){
          double closeLots=NormalizeLot(posLots*0.20);  // 20% of current position
          if(closeLots<=0) closeLots=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
 
-         // Level 1 -- $900 profit: close 20% + move SL to breakeven
-         // BE SL uses ATR buffer (not 1 point): audit showed 88% of L1 trades wicked at 1-point BE.
-         // Campaign trades get wider buffer (0.5 ATR) -- slow builds retrace deeper before continuing.
-         // Momentum trades get 0.3 ATR -- tight enough to protect, wide enough to survive normal noise.
-         if(!gMgP1Done[mi] && posProfit>=900.0){
+         // Level 1 -- InpL1R (default 0.5R): close 20% + move SL to breakeven
+         // R-based so management fires proportionally on any account size.
+         // BE SL uses ATR buffer (not 1 point): campaign trades get wider buffer.
+         if(!gMgP1Done[mi] && rMult>=InpL1R){
             gMgP1Done[mi]=true;
             if(closeLots<posLots && trade.PositionClosePartial(tk,closeLots))
-               if(InpDebugExits) Print("=== PARTIAL L1 @$900 closed ",DoubleToString(closeLots,2)," lots profit=",DoubleToString(posProfit,2));
+               if(InpDebugExits) Print("=== PARTIAL L1 @",DoubleToString(InpL1R,1),"R closed ",DoubleToString(closeLots,2)," lots profit=",DoubleToString(posProfit,2));
             double _beAtr=(mi>=0 && gMgTradeType[mi]==0) ? atr*InpBEAtrCampaign : atr*InpBEAtrBuf;
             double beSL=(dir==1)? NormPrice(openP+_beAtr) : NormPrice(openP-_beAtr);
             if((dir==1&&beSL>curSL)||(dir==-1&&beSL<curSL)){
@@ -4871,34 +4881,34 @@ void ManagePositions()
                }
             }
          }
-         // Level 2 -- $1600 profit: close 20%
-         else if(gMgP1Done[mi] && !gMgP2Done[mi] && posProfit>=1600.0){
+         // Level 2 -- InpL2R (default 1.0R): close 20%
+         else if(gMgP1Done[mi] && !gMgP2Done[mi] && rMult>=InpL2R){
             gMgP2Done[mi]=true;
             if(closeLots<posLots && trade.PositionClosePartial(tk,closeLots))
-               if(InpDebugExits) Print("=== PARTIAL L2 @$1600 closed ",DoubleToString(closeLots,2)," lots");
+               if(InpDebugExits) Print("=== PARTIAL L2 @",DoubleToString(InpL2R,1),"R closed ",DoubleToString(closeLots,2)," lots");
          }
-         // Level 3 -- $3300 profit: close 20%
-         else if(gMgP2Done[mi] && !gMgP3Done[mi] && posProfit>=3300.0){
+         // Level 3 -- InpL3R (default 2.0R): close 20%
+         else if(gMgP2Done[mi] && !gMgP3Done[mi] && rMult>=InpL3R){
             gMgP3Done[mi]=true;
             if(closeLots<posLots && trade.PositionClosePartial(tk,closeLots))
-               if(InpDebugExits) Print("=== PARTIAL L3 @$3300 closed ",DoubleToString(closeLots,2)," lots");
+               if(InpDebugExits) Print("=== PARTIAL L3 @",DoubleToString(InpL3R,1),"R closed ",DoubleToString(closeLots,2)," lots");
          }
-         // Level 4 -- $4500 profit: close 20%
-         else if(gMgP3Done[mi] && !gMgP4Done[mi] && posProfit>=4500.0){
+         // Level 4 -- InpL4R (default 3.0R): close 20%
+         else if(gMgP3Done[mi] && !gMgP4Done[mi] && rMult>=InpL4R){
             gMgP4Done[mi]=true;
             if(closeLots<posLots && trade.PositionClosePartial(tk,closeLots))
-               if(InpDebugExits) Print("=== PARTIAL L4 @$4500 closed ",DoubleToString(closeLots,2)," lots");
+               if(InpDebugExits) Print("=== PARTIAL L4 @",DoubleToString(InpL4R,1),"R closed ",DoubleToString(closeLots,2)," lots");
          }
-         // Level 5 -- $6000 profit: close 20%
-         else if(gMgP4Done[mi] && !gMgP5Done[mi] && posProfit>=6000.0){
+         // Level 5 -- InpL5R (default 4.0R): close 20%
+         else if(gMgP4Done[mi] && !gMgP5Done[mi] && rMult>=InpL5R){
             gMgP5Done[mi]=true;
             if(closeLots<posLots && trade.PositionClosePartial(tk,closeLots))
-               if(InpDebugExits) Print("=== PARTIAL L5 @$6000 closed ",DoubleToString(closeLots,2)," lots");
+               if(InpDebugExits) Print("=== PARTIAL L5 @",DoubleToString(InpL5R,1),"R closed ",DoubleToString(closeLots,2)," lots");
          }
 
-         // Aggressive trailing -- activates once profit crosses $7000
+         // Aggressive trailing -- activates at InpTrailR (default 5.0R)
          // Uses swing structure (last 2 bars + 0.3 ATR buffer) -- tighter than ATR*2
-         if(!gMgTrailing[mi] && posProfit>=7000.0){
+         if(!gMgTrailing[mi] && rMult>=InpTrailR){
             gMgTrailing[mi]=true;
             // Seed trail at last 2-bar swing
             double seedSwing=(dir==1)?DBL_MAX:-DBL_MAX;
