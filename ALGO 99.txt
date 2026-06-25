@@ -3699,7 +3699,8 @@ input double        InpMinSLAtr         = 1.5;          // Minimum SL distance i
 input bool          InpUseKeyLevelStop  = true;         // Anchor SL beyond the recent KEY swing high/low (structure)
 input int           InpSwingLookback    = 20;           // Bars scanned for the protective key swing high/low
 input double        InpKeyLevelBufATR   = 0.80;         // Buffer beyond the key high/low (xATR) - gold wicks are large
-input double        InpMaxSLAtr         = 10.0;         // Safety cap on total SL distance (xATR)
+input double        InpMaxSLAtr         = 10.0;         // Safety cap on total SL distance (xATR) — applies to CAMP entries; MOM uses InpMomSLHardBlock
+input double        InpMomSLHardBlock   = 100.0;        // D=3/4 MOM hard block: if M5-derived SL exceeds this many price-pts, entry is skipped (no valid risk level; lot-scale handles 0-100pt range)
 input bool          InpCompSizing       = true;         // Recursion-size-aware sizing: compression sets stop distance + partial timing (wide loop=wider stop, failure-swing=tighter)
 
 input group "Letra37 EA - Take Profit"
@@ -4274,6 +4275,70 @@ double ComputeSL(const int dir,const double entry)
 //  the entry keys off), side-validate it (so a wrong-side level can never be used - the old
 //  reversal bug), buffer it by a small ATR amount, and set it once. The recent swing is only a
 //  fallback when no origin level exists. ATR safety cap always applies.
+
+// ComputeMomentumSL — SL engine specifically for D=3/4 MOM entries.
+// Root cause fixed: ComputeStructureSL on M15 finds spike-bottom extremes and distant swings
+//   that have no relationship to a momentum signal. Example: entry $5045, M15 structural low
+//   from a liquidity-sweep spike = $4975 → 70pt SL. But the genuine post-impulse consolidation
+//   base sits at $5030 (15pts away) and is clearly visible on M5. That 15pt level is the true
+//   invalidation — if momentum breaks it, the signal failed. The 70pt level is archaeology.
+// Fix: search M5 for the most recent pivot low (buys) / pivot high (sells) formed AFTER the
+//   impulse began, within the last 25 closed M5 bars (~125 min). That local structure is the
+//   correct invalidation for this specific momentum move.
+// Fallback: InpSLAtrMult × ATR when no M5 pivot is found in the window.
+// Hard cap (InpMomSLHardBlock) is enforced externally in the entry path.
+double ComputeMomentumSL(const int dir, const double entry)
+{
+   double a=cur_atr; if(a<=0) a=10*_Point;
+   double buf=InpKeyLevelBufATR*a*gRecSizeMult;
+
+   // --- M5 pivot search: last 25 closed M5 bars ≈ 125 minutes ---
+   MqlRates r5[];
+   ArraySetAsSeries(r5,false);                          // r5[0]=oldest, r5[n-1]=most recent
+   int n5=CopyRates(_Symbol,PERIOD_M5,1,25,r5);         // bar 1 = skip forming bar
+
+   double best=0.0;
+   int pvLen=3;                                         // 3 bars each side: local structure, ignores micro-noise
+   if(n5>=pvLen*2+1){
+      for(int k=pvLen; k<n5-pvLen; k++){
+         bool isPivot=true;
+         if(dir==1){                                    // BUY: seek pivot LOW below entry
+            double lo=r5[k].low;
+            if(lo>=entry) continue;                     // must sit below entry
+            if(entry-lo < InpMinSLAtr*a) continue;     // inside noise floor — skip
+            for(int j=k-pvLen; j<=k+pvLen && isPivot; j++){
+               if(j==k) continue;
+               if(r5[j].low<=lo) isPivot=false;
+            }
+            if(isPivot) best=lo;                        // keep updating: last valid pivot = most recent
+         } else {                                       // SELL: seek pivot HIGH above entry
+            double hi=r5[k].high;
+            if(hi<=entry) continue;
+            if(hi-entry < InpMinSLAtr*a) continue;
+            for(int j=k-pvLen; j<=k+pvLen && isPivot; j++){
+               if(j==k) continue;
+               if(r5[j].high>=hi) isPivot=false;
+            }
+            if(isPivot) best=hi;
+         }
+      }
+   }
+
+   double sl;
+   if(best>0.0){
+      sl=(dir==1) ? best-buf : best+buf;               // SL just beyond the M5 post-impulse pivot
+   } else {
+      sl=entry+(dir==1 ? -InpSLAtrMult*a : InpSLAtrMult*a);  // ATR fallback: no M5 pivot found
+   }
+
+   // Minimum distance floor (same enforcement as ComputeStructureSL)
+   double minD=MathMax(MinStopDist()+_Point, InpMinSLAtr*gRecSizeMult*a);
+   if(dir==1  && sl>entry-minD) sl=entry-minD;
+   if(dir==-1 && sl<entry+minD) sl=entry+minD;
+
+   return(NormPrice(sl));
+}
+
 double ComputeStructureSL(const int dir,const double entry,const bool fuEntry,const bool mtfEntry)
 {
    double a=cur_atr; if(a<=0) a=10*_Point;
@@ -4428,8 +4493,40 @@ void TryEnter()
          double askD=sym.Ask(), bidD=sym.Bid();
          double entryD=(dir==1?askD:bidD);
          gRecSizeMult=RecSizeMult();
-         double slD=ComputeStructureSL(dir,entryD,false,false);
+         // -- SL SELECTION -----------------------------------------------------------------------
+         // D=3/4 MOM: ComputeMomentumSL searches M5 for the post-impulse consolidation pivot.
+         //   Fixes the spike-bottom problem: M15 structural swing was anchoring 70pt SLs to
+         //   liquidity-sweep wicks instead of the 15pt post-impulse structure that actually
+         //   tests whether the momentum signal remains valid.
+         // D=2/4 CAMP: keeps ComputeStructureSL — wide structural SL is correct for campaigns
+         //   positioned at key demand/supply levels across multiple sessions.
+         double slD;
+         if(cur_ownerDeathSignals==3){
+            slD=ComputeMomentumSL(dir,entryD);
+            double _slDist=MathAbs(entryD-slD);
+            if(_slDist>InpMomSLHardBlock*_Point){
+               gEntryBlock="D=3 MOM SL "+DoubleToString(_slDist/_Point,1)+"pt > "+DoubleToString(InpMomSLHardBlock,0)+"pt hard cap";
+               return;
+            }
+         } else {
+            slD=ComputeStructureSL(dir,entryD,false,false);
+         }
          double lotD=CalcLot(entryD,slD);
+         // -- EXPLICIT LOT ENFORCEMENT -----------------------------------------------------------
+         // Guarantees 1% risk regardless of SL width. Silent safety layer: when CalcLot is
+         // correct (the normal case) the enforced lot matches exactly and nothing changes.
+         // Protects against: wrong pip-value on unusual broker configs, future code changes
+         // that accidentally bypass CalcLot, or edge cases with very wide SL entries.
+         {
+            double _rPct=(InpSmallAccount?InpSmallAcctRiskPct:InpRiskPercent);
+            double _rMoney=gAccount.Equity()*_rPct/100.0;
+            double _slPts=MathAbs(entryD-slD)/_Point;
+            double _mpp=MoneyPerPointPerLot();
+            if(_slPts>0 && _mpp>0){
+               double _enfLot=NormalizeLot(_rMoney/(_slPts*_mpp));
+               if(lotD>_enfLot) lotD=_enfLot;
+            }
+         }
          if(!MarginOK(dir,lotD,entryD)){ gEntryBlock="insufficient margin"; return; }
          string _typeTx=(_tradeType==0?"CAMP":"MOM");
          string cmtD=InpComment+" DEATH"+IntegerToString(cur_ownerDeathSignals)+" "+_typeTx;
