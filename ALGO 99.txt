@@ -4064,6 +4064,16 @@ bool InCooldown(const int dir,const int depth)
    return(gCdDir==dir && gCdDepth==depth);
 }
 
+//--- human-readable entry-type label for a managed ticket (e.g. "D2/4 MOM") ---
+string MgTypeLabel(const int mi)
+{
+   if(mi<0 || mi>=ArraySize(gMgDepth)) return("?");
+   int d=gMgDepth[mi];
+   string tt=(gMgTradeType[mi]==0?"CAMP":"MOM");
+   string dlbl=(d>0? "D"+IntegerToString(d)+"/4 " : "");
+   return(dlbl+tt);
+}
+
 //--- ARC v2 apex builder (SYMPHONY port): uses the ARC inputs (declared in the EA section) and
 //  the raw leg values published by ContextRun. apex = leg origin + dir*leg*ExtMult (the convex
 //  curve target); ctx_arcNow is the time-projected expected price along the arc. ---
@@ -4919,12 +4929,15 @@ void ManagePositions()
       double posLots  =PositionGetDouble(POSITION_VOLUME);
       // heldBars computed here so QProt log can use it (also used by hold gate below)
       int heldBars=(int)((TimeCurrent()-(datetime)PositionGetInteger(POSITION_TIME))/MathMax(PeriodSeconds(_Period),1));
-      if(InpQProtEnabled && mi>=0){
-         // -- continuously update MFE / MAE (in R) --
+      // -- continuously update MFE / MAE (in R) -- decoupled from QProt so the MFE-based
+      //    winner protection (Solution 7) keeps working even if InpQProtEnabled is off --
+      if(mi>=0){
          double excursion=(dir==1?(mkt-openP):(openP-mkt));
          double rNow=(risk>0)?excursion/risk:0.0;
          if(rNow>gMgMFE[mi]) gMgMFE[mi]=rNow;
          if((-rNow)>gMgMAE[mi]) gMgMAE[mi]=-rNow;
+      }
+      if(InpQProtEnabled && mi>=0){
 
          // trade age in minutes
          int ageMin=(int)((TimeCurrent()-gMgEntryTime[mi])/60);
@@ -5049,7 +5062,7 @@ void ManagePositions()
          if(!gMgP1Done[mi] && favPts>=InpPartL1Pts){
             gMgP1Done[mi]=true;
             if(closeL1<posLots && trade.PositionClosePartial(tk,closeL1))
-               if(InpDebugExits) Print("=== PARTIAL L1 @",DoubleToString(favPts,1),"pt closed ",DoubleToString(closeL1,2)," lots");
+               if(InpDebugExits) Print("=== PARTIAL L1 [",MgTypeLabel(mi),"] @",DoubleToString(favPts,1),"pt closed ",DoubleToString(closeL1,2)," lots");
             double _beAtr=(gMgTradeType[mi]==0) ? atr*InpBEAtrCampaign : atr*InpBEAtrBuf;
             double beSL=(dir==1)? NormPrice(openP+_beAtr) : NormPrice(openP-_beAtr);
             if((dir==1&&beSL>curSL)||(dir==-1&&beSL<curSL)){
@@ -5057,8 +5070,8 @@ void ManagePositions()
                bool _sideOK=(dir==1?beSL<mkt-_minD:beSL>mkt+_minD);
                if(_sideOK && trade.PositionModify(tk,beSL,0.0)){
                   curSL=beSL;
-                  if(InpDebugExits) Print("=== BREAKEVEN SL moved to ",DoubleToString(beSL,_Digits),
-                     "  (type=",(gMgTradeType[mi]==0?"Campaign":"Momentum")," buf=",DoubleToString(_beAtr,_Digits),")");
+                  if(InpDebugExits) Print("=== BREAKEVEN SL [",MgTypeLabel(mi),"] moved to ",DoubleToString(beSL,_Digits),
+                     "  buf=",DoubleToString(_beAtr,_Digits));
                }
             }
          }
@@ -5066,25 +5079,25 @@ void ManagePositions()
          else if(gMgP1Done[mi] && !gMgP2Done[mi] && favPts>=InpPartL2Pts){
             gMgP2Done[mi]=true;
             if(closeLn<posLots && trade.PositionClosePartial(tk,closeLn))
-               if(InpDebugExits) Print("=== PARTIAL L2 @",DoubleToString(favPts,1),"pt closed ",DoubleToString(closeLn,2)," lots");
+               if(InpDebugExits) Print("=== PARTIAL L2 [",MgTypeLabel(mi),"] @",DoubleToString(favPts,1),"pt closed ",DoubleToString(closeLn,2)," lots");
          }
          // Level 3 -- close 15%
          else if(gMgP2Done[mi] && !gMgP3Done[mi] && favPts>=InpPartL3Pts){
             gMgP3Done[mi]=true;
             if(closeLn<posLots && trade.PositionClosePartial(tk,closeLn))
-               if(InpDebugExits) Print("=== PARTIAL L3 @",DoubleToString(favPts,1),"pt closed ",DoubleToString(closeLn,2)," lots");
+               if(InpDebugExits) Print("=== PARTIAL L3 [",MgTypeLabel(mi),"] @",DoubleToString(favPts,1),"pt closed ",DoubleToString(closeLn,2)," lots");
          }
          // Level 4 -- close 15% + start trailing
          else if(gMgP3Done[mi] && !gMgP4Done[mi] && favPts>=InpPartL4Pts){
             gMgP4Done[mi]=true;
             if(closeLn<posLots && trade.PositionClosePartial(tk,closeLn))
-               if(InpDebugExits) Print("=== PARTIAL L4 @",DoubleToString(favPts,1),"pt closed ",DoubleToString(closeLn,2)," lots (trail armed)");
+               if(InpDebugExits) Print("=== PARTIAL L4 [",MgTypeLabel(mi),"] @",DoubleToString(favPts,1),"pt closed ",DoubleToString(closeLn,2)," lots (trail armed)");
          }
          // Level 5 -- close 15%
          else if(gMgP4Done[mi] && !gMgP5Done[mi] && favPts>=InpPartL5Pts){
             gMgP5Done[mi]=true;
             if(closeLn<posLots && trade.PositionClosePartial(tk,closeLn))
-               if(InpDebugExits) Print("=== PARTIAL L5 @",DoubleToString(favPts,1),"pt closed ",DoubleToString(closeLn,2)," lots");
+               if(InpDebugExits) Print("=== PARTIAL L5 [",MgTypeLabel(mi),"] @",DoubleToString(favPts,1),"pt closed ",DoubleToString(closeLn,2)," lots");
          }
 
          // Aggressive trailing -- activates at L4 (22pt). Uses last-2-bar swing + 0.3 ATR buffer.
@@ -5097,7 +5110,7 @@ void ManagePositions()
             }
             if(seedSwing==DBL_MAX||seedSwing==-DBL_MAX) seedSwing=(dir==1)?(mkt-atr*1.0):(mkt+atr*1.0);
             gMgTrailSL[mi]=(dir==1)?seedSwing-atr*0.30:seedSwing+atr*0.30;
-            if(InpDebugExits) Print("=== AGGRESSIVE TRAIL ON @L4  seedSL=",DoubleToString(gMgTrailSL[mi],_Digits));
+            if(InpDebugExits) Print("=== AGGRESSIVE TRAIL ON [",MgTypeLabel(mi),"] @L4  seedSL=",DoubleToString(gMgTrailSL[mi],_Digits));
          }
          if(gMgTrailing[mi]){
             double swing=(dir==1)?DBL_MAX:-DBL_MAX;
@@ -5113,7 +5126,7 @@ void ManagePositions()
                bool sideOK=(dir==1?newTrail<mkt-minD:newTrail>mkt+minD);
                if(sideOK && trade.PositionModify(tk,newTrail,0.0)){
                   gMgTrailSL[mi]=newTrail;
-                  if(InpDebugExits) Print("=== TRAIL SL -> ",DoubleToString(newTrail,_Digits),
+                  if(InpDebugExits) Print("=== TRAIL SL [",MgTypeLabel(mi),"] -> ",DoubleToString(newTrail,_Digits),
                      "  (swing=",DoubleToString(swing,_Digits),")  fav=",DoubleToString(favPts,1),"pt");
                }
             }
@@ -5169,7 +5182,7 @@ void ManagePositions()
                gCdUntil=TimeCurrent()+(datetime)(InpCooldownBars*MathMax(PeriodSeconds(_Period),1));
                gCdDir=dir; gCdDepth=(mi>=0?gMgDepth[mi]:0);
             }
-            DbgExit("ownership-transfer (owner "+cur_curveOwner+" "+f_waveDirLabel(cur_ownerDir)+" dom "+DoubleToString(cur_domTransfer,0)+"% >= thr "+DoubleToString(_exThr,0)+"%)",tk,dir,openP,mkt,rMult);
+            DbgExit("ownership-transfer ["+MgTypeLabel(mi)+" MFE "+DoubleToString((mi>=0?gMgMFE[mi]:0.0),1)+"R] (owner "+cur_curveOwner+" "+f_waveDirLabel(cur_ownerDir)+" dom "+DoubleToString(cur_domTransfer,0)+"% >= thr "+DoubleToString(_exThr,0)+"%)",tk,dir,openP,mkt,rMult);
             if(!trade.PositionClose(tk) && MktClosed()) return;
             continue;
          }
