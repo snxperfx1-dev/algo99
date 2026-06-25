@@ -3822,7 +3822,7 @@ input int    InpNewsMinEnd       = 30;    // News window: end minute
 input double InpBEAtrBuf         = 0.30; // Breakeven SL buffer for MOMENTUM trades (xATR). Old=1pt, now ~1-2 pts breathing room
 input double InpBEAtrCampaign    = 0.50; // Breakeven SL buffer for CAMPAIGN trades (Asia/Close D=2/4 - wider: long slow builds wick deeper)
 input int    InpCampaignProtMin  = 120;  // QProt: age threshold (minutes) for CAMPAIGN trades before protection fires (vs InpQProtMinutes for momentum)
-input bool   InpBlockHourGate    = true;  // Block low-EV hours per quant audit: 00h,12h,13h,20h,21h,22h hard-blocked; 19h D=3/4 MOM blocked (CAMP allowed)
+input bool   InpBlockHourGate    = true;  // Block low-EV hours per quant audit: 00h,12h,13h,19h,20h,21h,22h all hard-blocked
 
 //==================================================================
 // EA GLOBALS
@@ -4427,8 +4427,7 @@ void TryEnter()
    if(InpBlockHourGate){
       MqlDateTime _hDte; TimeToStruct(TimeCurrent(),_hDte);
       int _hh=_hDte.hour;
-      if(_hh==0||_hh==12||_hh==13||_hh==20||_hh==21||_hh==22){ gEntryBlock="hour blocked "+IntegerToString(_hh)+"h (quant audit)"; return; }
-      if(_hh==19 && cur_ownerDeathSignals==3){ gEntryBlock="19h D=3/4 MOM blocked (31% WR — CAMP runs)"; return; }
+      if(_hh==0||_hh==12||_hh==13||_hh==19||_hh==20||_hh==21||_hh==22){ gEntryBlock="hour blocked "+IntegerToString(_hh)+"h (quant audit)"; return; }
    }
 
    int dir=DesiredDirection();
@@ -4475,10 +4474,8 @@ void TryEnter()
          // Partial block — D=3/4 MOM only, D=2/4 CAMP still runs (72.7% WR at 19h):
          //   19h D=3/4 MOM: 31.6% WR, 15 losses out of 19 exits — hour held up by 2 outlier wins
          if(InpBlockHourGate){
-            bool _hardBlock=(_eh==0||_eh==12||_eh==13||_eh==20||_eh==21||_eh==22);
-            bool _mom19    =(_eh==19 && cur_ownerDeathSignals==3);
+            bool _hardBlock=(_eh==0||_eh==12||_eh==13||_eh==19||_eh==20||_eh==21||_eh==22);
             if(_hardBlock){ gEntryBlock="hour blocked "+IntegerToString(_eh)+"h (quant audit)"; return; }
-            if(_mom19    ){ gEntryBlock="19h D=3/4 MOM blocked (31% WR — CAMP runs)"; return; }
          }
 
          // -- TRADE TYPE CLASSIFICATION (drives BE SL width + QProt threshold) --
@@ -4663,10 +4660,8 @@ void TryEnter()
    if(InpBlockHourGate){
       MqlDateTime _npDte; TimeToStruct(TimeCurrent(),_npDte);
       int _nph=_npDte.hour;
-      bool _nphBlock=(_nph==0||_nph==12||_nph==13||_nph==20||_nph==21||_nph==22);
-      bool _nph19mom=(_nph==19 && cur_ownerDeathSignals==3);
+      bool _nphBlock=(_nph==0||_nph==12||_nph==13||_nph==19||_nph==20||_nph==21||_nph==22);
       if(_nphBlock){ gEntryBlock="hour blocked "+IntegerToString(_nph)+"h (quant audit)"; return; }
-      if(_nph19mom ){ gEntryBlock="19h D=3/4 MOM blocked (31% WR — CAMP runs)"; return; }
    }
    int _maxTrades=(InpSmallAccount && InpSmallAcctMaxTrades>0)
                   ? (InpMaxTradesPerDay>0? MathMin(InpMaxTradesPerDay,InpSmallAcctMaxTrades) : InpSmallAcctMaxTrades)
