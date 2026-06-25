@@ -3845,13 +3845,13 @@ bool     gMktClosed     = false; // set when a management/flip order is rejected
 datetime eaT[]; double eaO[],eaH[],eaL[],eaC[],eaVol[];
 
 //--- per-ticket management memory ---
-// 5 partial-close levels (price points moved from entry): 8/16/32/44/50pts -> 20%/15%/15%/15%+trail/15%
+// 5 partial-close levels (price points moved from entry): 4/8/16/22/29pts -> 20%/15%/15%/15%+trail/15%
 ulong  gMgTicket[]; double gMgInitSL[]; double gMgTP1[]; bool gMgPartialDone[]; bool gMgBEDone[]; int gMgDir[];
-bool   gMgP1Done[];  //  8pts moved → 20% close + move SL to breakeven
-bool   gMgP2Done[];  // 16pts moved → 15% close
-bool   gMgP3Done[];  // 32pts moved → 15% close
-bool   gMgP4Done[];  // 44pts moved → 15% close + activate trailing
-bool   gMgP5Done[];  // 50pts moved → 15% close
+bool   gMgP1Done[];  //  4pts moved → 20% close + move SL to breakeven
+bool   gMgP2Done[];  //  8pts moved → 15% close
+bool   gMgP3Done[];  // 16pts moved → 15% close
+bool   gMgP4Done[];  // 22pts moved → 15% close + activate trailing
+bool   gMgP5Done[];  // 29pts moved → 15% close
 bool   gMgTrailing[];// trailing stop active (activates at L4)
 double gMgTrailSL[]; // last trailing SL price
 //--- 30-min quality protection per-ticket state ---
@@ -4860,11 +4860,11 @@ void ManagePositions()
       //==============================================================
       // PROFIT MANAGEMENT — point-distance partial system (5 levels)
       // Triggers on raw price movement from entry (price-pts = $1/oz on XAUUSD)
-      // L1:  8pts → close 20% + breakeven SL
-      // L2: 16pts → close 15%
-      // L3: 32pts → close 15%
-      // L4: 44pts → close 15% + activate trailing
-      // L5: 50pts → close 15%
+      // L1:  4pts → close 20% + breakeven SL
+      // L2:  8pts → close 15%
+      // L3: 16pts → close 15%
+      // L4: 22pts → close 15% + activate trailing
+      // L5: 29pts → close 15%
       // Cumulative: L2 only fires after L1, etc.
       //==============================================================
       if(mi>=0 && posLots>0 && posProfit>0){
@@ -4875,11 +4875,11 @@ void ManagePositions()
          if(closeLots20<=0) closeLots20=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
          if(closeLots15<=0) closeLots15=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
 
-         // Level 1 -- 8pts: close 20% + move SL to breakeven
-         if(!gMgP1Done[mi] && priceMoved>=8.0){
+         // Level 1 -- 4pts: close 20% + move SL to breakeven
+         if(!gMgP1Done[mi] && priceMoved>=4.0){
             gMgP1Done[mi]=true;
             if(closeLots20<posLots && trade.PositionClosePartial(tk,closeLots20))
-               if(InpDebugExits) Print("=== PARTIAL L1 @8pts closed ",DoubleToString(closeLots20,2)," lots profit=",DoubleToString(posProfit,2));
+               if(InpDebugExits) Print("=== PARTIAL L1 @4pts closed ",DoubleToString(closeLots20,2)," lots profit=",DoubleToString(posProfit,2));
             double _beAtr=(mi>=0 && gMgTradeType[mi]==0) ? atr*InpBEAtrCampaign : atr*InpBEAtrBuf;
             double beSL=(dir==1)? NormPrice(openP+_beAtr) : NormPrice(openP-_beAtr);
             if((dir==1&&beSL>curSL)||(dir==-1&&beSL<curSL)){
@@ -4893,23 +4893,23 @@ void ManagePositions()
                }
             }
          }
-         // Level 2 -- 16pts: close 15%
-         else if(gMgP1Done[mi] && !gMgP2Done[mi] && priceMoved>=16.0){
+         // Level 2 -- 8pts: close 15%
+         else if(gMgP1Done[mi] && !gMgP2Done[mi] && priceMoved>=8.0){
             gMgP2Done[mi]=true;
             if(closeLots15<posLots && trade.PositionClosePartial(tk,closeLots15))
-               if(InpDebugExits) Print("=== PARTIAL L2 @16pts closed ",DoubleToString(closeLots15,2)," lots");
+               if(InpDebugExits) Print("=== PARTIAL L2 @8pts closed ",DoubleToString(closeLots15,2)," lots");
          }
-         // Level 3 -- 32pts: close 15%
-         else if(gMgP2Done[mi] && !gMgP3Done[mi] && priceMoved>=32.0){
+         // Level 3 -- 16pts: close 15%
+         else if(gMgP2Done[mi] && !gMgP3Done[mi] && priceMoved>=16.0){
             gMgP3Done[mi]=true;
             if(closeLots15<posLots && trade.PositionClosePartial(tk,closeLots15))
-               if(InpDebugExits) Print("=== PARTIAL L3 @32pts closed ",DoubleToString(closeLots15,2)," lots");
+               if(InpDebugExits) Print("=== PARTIAL L3 @16pts closed ",DoubleToString(closeLots15,2)," lots");
          }
-         // Level 4 -- 44pts: close 15% + activate trailing stop
-         else if(gMgP3Done[mi] && !gMgP4Done[mi] && priceMoved>=44.0){
+         // Level 4 -- 22pts: close 15% + activate trailing stop
+         else if(gMgP3Done[mi] && !gMgP4Done[mi] && priceMoved>=22.0){
             gMgP4Done[mi]=true;
             if(closeLots15<posLots && trade.PositionClosePartial(tk,closeLots15))
-               if(InpDebugExits) Print("=== PARTIAL L4 @44pts closed ",DoubleToString(closeLots15,2)," lots + trailing ON");
+               if(InpDebugExits) Print("=== PARTIAL L4 @22pts closed ",DoubleToString(closeLots15,2)," lots + trailing ON");
             if(!gMgTrailing[mi]){
                gMgTrailing[mi]=true;
                double seedSwing=(dir==1)?DBL_MAX:-DBL_MAX;
@@ -4919,14 +4919,14 @@ void ManagePositions()
                }
                if(seedSwing==DBL_MAX||seedSwing==-DBL_MAX) seedSwing=(dir==1)?(mkt-atr):(mkt+atr);
                gMgTrailSL[mi]=(dir==1)?seedSwing-atr*0.30:seedSwing+atr*0.30;
-               if(InpDebugExits) Print("=== TRAIL ACTIVATED @44pts  seedSL=",DoubleToString(gMgTrailSL[mi],_Digits));
+               if(InpDebugExits) Print("=== TRAIL ACTIVATED @22pts  seedSL=",DoubleToString(gMgTrailSL[mi],_Digits));
             }
          }
-         // Level 5 -- 50pts: close 15%
-         else if(gMgP4Done[mi] && !gMgP5Done[mi] && priceMoved>=50.0){
+         // Level 5 -- 29pts: close 15%
+         else if(gMgP4Done[mi] && !gMgP5Done[mi] && priceMoved>=29.0){
             gMgP5Done[mi]=true;
             if(closeLots15<posLots && trade.PositionClosePartial(tk,closeLots15))
-               if(InpDebugExits) Print("=== PARTIAL L5 @50pts closed ",DoubleToString(closeLots15,2)," lots");
+               if(InpDebugExits) Print("=== PARTIAL L5 @29pts closed ",DoubleToString(closeLots15,2)," lots");
          }
 
          // Trailing stop — activated at L4 (4.4R); continues updating here every bar
