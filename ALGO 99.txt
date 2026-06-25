@@ -2990,6 +2990,7 @@ void ResetState()
    g_huntMode=0;g_huntActivatedBar=-1;g_huntDemandHi=NA;g_huntDemandLo=NA;
    cur_ownerDeathSignals=0;
    ArrayFree(gMgTicket);ArrayFree(gMgInitSL);ArrayFree(gMgTP1);ArrayFree(gMgPartialDone);ArrayFree(gMgBEDone);ArrayFree(gMgDir);
+   ArrayFree(gMgInitRisk);
    ArrayFree(gMgP1Done);ArrayFree(gMgP2Done);ArrayFree(gMgP3Done);ArrayFree(gMgP4Done);ArrayFree(gMgP5Done);
    ArrayFree(gMgTrailing);ArrayFree(gMgTrailSL);
    ArrayFree(gMgEntryTime);ArrayFree(gMgMFE);ArrayFree(gMgMAE);ArrayFree(gMgQProtMode);ArrayFree(gMgQExit50);
@@ -3846,12 +3847,13 @@ datetime eaT[]; double eaO[],eaH[],eaL[],eaC[],eaVol[];
 //--- per-ticket management memory ---
 // 5 partial-close levels (dollars profit): 900, 2300, 4400, 6400, 8600 -> 20% each
 ulong  gMgTicket[]; double gMgInitSL[]; double gMgTP1[]; bool gMgPartialDone[]; bool gMgBEDone[]; int gMgDir[];
-bool   gMgP1Done[];  // $900  -- 20% close + move SL to breakeven
-bool   gMgP2Done[];  // $2300 -- 20% close
-bool   gMgP3Done[];  // $4400 -- 20% close
-bool   gMgP4Done[];  // $6400 -- 20% close
-bool   gMgP5Done[];  // $8600 -- 20% close + activate trailing stop
-bool   gMgTrailing[];// trailing stop active (after $8600 hit)
+double gMgInitRisk[];// initial dollar risk per trade — used for R-proportional partial thresholds (scales with account size + position sizing)
+bool   gMgP1Done[];  // 0.75R — 20% close + move SL to breakeven
+bool   gMgP2Done[];  // 1.5R  — 20% close
+bool   gMgP3Done[];  // 2.5R  — 20% close
+bool   gMgP4Done[];  // 4.0R  — 20% close
+bool   gMgP5Done[];  // 6.0R  — 20% close + activate trailing stop
+bool   gMgTrailing[];// trailing stop active (after 8R)
 double gMgTrailSL[]; // last trailing SL price
 //--- 30-min quality protection per-ticket state ---
 datetime gMgEntryTime[];  // wall-clock time of entry (for minute-age)
@@ -3944,6 +3946,7 @@ void MgRegister(const ulong tk,const double initSL,const double tp1,const int di
    if(MgIndex(tk)>=0) return;
    int s=ArraySize(gMgTicket);
    ArrayResize(gMgTicket,s+1);ArrayResize(gMgInitSL,s+1);ArrayResize(gMgTP1,s+1);ArrayResize(gMgPartialDone,s+1);ArrayResize(gMgBEDone,s+1);ArrayResize(gMgDir,s+1);
+   ArrayResize(gMgInitRisk,s+1);
    ArrayResize(gMgP1Done,s+1);ArrayResize(gMgP2Done,s+1);ArrayResize(gMgP3Done,s+1);ArrayResize(gMgP4Done,s+1);ArrayResize(gMgP5Done,s+1);
    ArrayResize(gMgTrailing,s+1);ArrayResize(gMgTrailSL,s+1);
    ArrayResize(gMgEntryTime,s+1);ArrayResize(gMgMFE,s+1);ArrayResize(gMgMAE,s+1);
@@ -3951,6 +3954,16 @@ void MgRegister(const ulong tk,const double initSL,const double tp1,const int di
    gMgTicket[s]=tk; gMgInitSL[s]=initSL; gMgTP1[s]=tp1; gMgPartialDone[s]=false; gMgBEDone[s]=false; gMgDir[s]=dir;
    gMgP1Done[s]=false; gMgP2Done[s]=false; gMgP3Done[s]=false; gMgP4Done[s]=false; gMgP5Done[s]=false;
    gMgTrailing[s]=false; gMgTrailSL[s]=0.0;
+   // Compute initial dollar risk for this position — drives R-proportional partial thresholds.
+   // Uses actual position data (open price × lots × SL distance) so it's correct for every entry
+   // type regardless of account size, lot scaling or SL width.
+   {
+      double _openP=0.0, _lots=0.0;
+      if(posinfo.SelectByTicket(tk)){ _openP=posinfo.PriceOpen(); _lots=posinfo.Volume(); }
+      double _slDist=(_openP>0 && initSL>0) ? MathAbs(_openP-initSL)/_Point : 0.0;
+      double _mpp=MoneyPerPointPerLot();
+      gMgInitRisk[s]=(_slDist>0 && _lots>0 && _mpp>0) ? _slDist*_lots*_mpp : 900.0;
+   }
    // quality protection initial state
    gMgEntryTime[s]=TimeCurrent(); gMgMFE[s]=0.0; gMgMAE[s]=0.0;
    gMgQProtMode[s]=false; gMgQExit50[s]=false;
@@ -3962,6 +3975,7 @@ void MgCleanup()
    for(int q=ArraySize(gMgTicket)-1;q>=0;q--){
       if(!posinfo.SelectByTicket(gMgTicket[q])){
          ArrayRemove(gMgTicket,q,1);ArrayRemove(gMgInitSL,q,1);ArrayRemove(gMgTP1,q,1);ArrayRemove(gMgPartialDone,q,1);ArrayRemove(gMgBEDone,q,1);ArrayRemove(gMgDir,q,1);
+         ArrayRemove(gMgInitRisk,q,1);
          ArrayRemove(gMgP1Done,q,1);ArrayRemove(gMgP2Done,q,1);ArrayRemove(gMgP3Done,q,1);ArrayRemove(gMgP4Done,q,1);ArrayRemove(gMgP5Done,q,1);
          ArrayRemove(gMgTrailing,q,1);ArrayRemove(gMgTrailSL,q,1);
          ArrayRemove(gMgEntryTime,q,1);ArrayRemove(gMgMFE,q,1);ArrayRemove(gMgMAE,q,1);
@@ -4973,15 +4987,16 @@ void ManagePositions()
       if(mi>=0 && posLots>0 && posProfit>0){
          double closeLots=NormalizeLot(posLots*0.20);  // 20% of current position
          if(closeLots<=0) closeLots=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
+         // R-proportional thresholds — scale with initial risk so partials fire consistently
+         // for all trade types and account sizes. gMgInitRisk stores the actual dollar risk
+         // placed at entry (SL distance × lots × pip value).
+         double _1R=(mi>=0 && gMgInitRisk[mi]>0) ? gMgInitRisk[mi] : 900.0;
 
-         // Level 1 -- $900 profit: close 20% + move SL to breakeven
-         // BE SL uses ATR buffer (not 1 point): audit showed 88% of L1 trades wicked at 1-point BE.
-         // Campaign trades get wider buffer (0.5 ATR) -- slow builds retrace deeper before continuing.
-         // Momentum trades get 0.3 ATR -- tight enough to protect, wide enough to survive normal noise.
-         if(!gMgP1Done[mi] && posProfit>=900.0){
+         // Level 1 -- 0.75R: close 20% + move SL to breakeven
+         if(!gMgP1Done[mi] && posProfit>=_1R*0.75){
             gMgP1Done[mi]=true;
             if(closeLots<posLots && trade.PositionClosePartial(tk,closeLots))
-               if(InpDebugExits) Print("=== PARTIAL L1 @$900 closed ",DoubleToString(closeLots,2)," lots profit=",DoubleToString(posProfit,2));
+               if(InpDebugExits) Print("=== PARTIAL L1 @0.75R ($",DoubleToString(_1R*0.75,0),") closed ",DoubleToString(closeLots,2)," lots profit=",DoubleToString(posProfit,2));
             double _beAtr=(mi>=0 && gMgTradeType[mi]==0) ? atr*InpBEAtrCampaign : atr*InpBEAtrBuf;
             double beSL=(dir==1)? NormPrice(openP+_beAtr) : NormPrice(openP-_beAtr);
             if((dir==1&&beSL>curSL)||(dir==-1&&beSL<curSL)){
@@ -4995,29 +5010,29 @@ void ManagePositions()
                }
             }
          }
-         // Level 2 -- $1600 profit: close 20%
-         else if(gMgP1Done[mi] && !gMgP2Done[mi] && posProfit>=1600.0){
+         // Level 2 -- 1.5R: close 20%
+         else if(gMgP1Done[mi] && !gMgP2Done[mi] && posProfit>=_1R*1.5){
             gMgP2Done[mi]=true;
             if(closeLots<posLots && trade.PositionClosePartial(tk,closeLots))
-               if(InpDebugExits) Print("=== PARTIAL L2 @$1600 closed ",DoubleToString(closeLots,2)," lots");
+               if(InpDebugExits) Print("=== PARTIAL L2 @1.5R ($",DoubleToString(_1R*1.5,0),") closed ",DoubleToString(closeLots,2)," lots");
          }
-         // Level 3 -- $3300 profit: close 20%
-         else if(gMgP2Done[mi] && !gMgP3Done[mi] && posProfit>=3300.0){
+         // Level 3 -- 2.5R: close 20%
+         else if(gMgP2Done[mi] && !gMgP3Done[mi] && posProfit>=_1R*2.5){
             gMgP3Done[mi]=true;
             if(closeLots<posLots && trade.PositionClosePartial(tk,closeLots))
-               if(InpDebugExits) Print("=== PARTIAL L3 @$3300 closed ",DoubleToString(closeLots,2)," lots");
+               if(InpDebugExits) Print("=== PARTIAL L3 @2.5R ($",DoubleToString(_1R*2.5,0),") closed ",DoubleToString(closeLots,2)," lots");
          }
-         // Level 4 -- $4500 profit: close 20%
-         else if(gMgP3Done[mi] && !gMgP4Done[mi] && posProfit>=4500.0){
+         // Level 4 -- 4.0R: close 20%
+         else if(gMgP3Done[mi] && !gMgP4Done[mi] && posProfit>=_1R*4.0){
             gMgP4Done[mi]=true;
             if(closeLots<posLots && trade.PositionClosePartial(tk,closeLots))
-               if(InpDebugExits) Print("=== PARTIAL L4 @$4500 closed ",DoubleToString(closeLots,2)," lots");
+               if(InpDebugExits) Print("=== PARTIAL L4 @4.0R ($",DoubleToString(_1R*4.0,0),") closed ",DoubleToString(closeLots,2)," lots");
          }
-         // Level 5 -- $6000 profit: close 20%
-         else if(gMgP4Done[mi] && !gMgP5Done[mi] && posProfit>=6000.0){
+         // Level 5 -- 6.0R: close 20%
+         else if(gMgP4Done[mi] && !gMgP5Done[mi] && posProfit>=_1R*6.0){
             gMgP5Done[mi]=true;
             if(closeLots<posLots && trade.PositionClosePartial(tk,closeLots))
-               if(InpDebugExits) Print("=== PARTIAL L5 @$6000 closed ",DoubleToString(closeLots,2)," lots");
+               if(InpDebugExits) Print("=== PARTIAL L5 @6.0R ($",DoubleToString(_1R*6.0,0),") closed ",DoubleToString(closeLots,2)," lots");
          }
 
          // Aggressive trailing -- activates once profit crosses $7000
