@@ -1438,7 +1438,7 @@ void ProcessBar(const int i,const double &o[],const double &h[],const double &l[
    double waveTotalRange=!naf(originToExtreme)?originToExtreme:atr*5.0;
    double currentToFlipMid=(!naf(g_flipTop)&&!naf(g_flipBot))?MathAbs(cl-(g_flipTop+g_flipBot)/2.0):atr*4.0;
    double currentToExtreme=direction==1?MathAbs(nz(g_cycleHigh,cl+atr)-cl):MathAbs(cl-nz(g_cycleLow,cl-atr));
-   double _posNormDen=fmax2(waveTotalRange,atr*0.5);
+   double _posNormDen=fmax2(fmax2(waveTotalRange,atr*0.5),1e-10);  // floor to 1e-10: prevents zero-divide when waveTotalRange and ATR are both uninitialised at backtest start
    double posDistToCreation   =fmin2(currentToExtreme/_posNormDen*100.0,100.0);
    double posDistToDemand     =fmin2(currentToFlipMid/_posNormDen*100.0,100.0);
 
