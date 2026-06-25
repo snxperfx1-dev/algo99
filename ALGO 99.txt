@@ -1439,6 +1439,7 @@ void ProcessBar(const int i,const double &o[],const double &h[],const double &l[
    double currentToFlipMid=(!naf(g_flipTop)&&!naf(g_flipBot))?MathAbs(cl-(g_flipTop+g_flipBot)/2.0):atr*4.0;
    double currentToExtreme=direction==1?MathAbs(nz(g_cycleHigh,cl+atr)-cl):MathAbs(cl-nz(g_cycleLow,cl-atr));
    double _posNormDen=fmax2(waveTotalRange,atr*0.5);
+   if(_posNormDen<=0.0) _posNormDen=1e-10;   // zero-divide guard: waveTotalRange and ATR can both be 0 during backtest warmup bars
    double posDistToCreation   =fmin2(currentToExtreme/_posNormDen*100.0,100.0);
    double posDistToDemand     =fmin2(currentToFlipMid/_posNormDen*100.0,100.0);
 
@@ -3761,7 +3762,7 @@ input double InpTIEStrongAlign  = 60.0;    // TIE: "strong" cycle alignment thre
 input bool   InpAggressiveEntry = false;   // AGGRESSIVE: also enter on v60 confluence (mid-curve) - off so FU extremes lead
 input bool   InpAggReqNet       = true;    // Aggressive: require network bias to agree
 input bool   InpAggReqTime      = false;   // Aggressive: respect TIE-opposed block
-input bool   InpFUExtremeEntry  = true;    // Enter AT the fresh FU node (the indicator's extreme) - stop beyond the wick tip
+input bool   InpFUExtremeEntry  = false;   // Enter AT the fresh FU node (DISABLED by audit - 5/6 hit hard SL; needs rework guards, see InpFUReworkGuards)
 input bool   InpFURequireBias   = true;    // FU: only take a node that AGREES with the dominant bias (DOE+network+wave) - stops fading reversals
 input bool   InpMultiTFEntry    = true;    // MULTI-TF: enter on a fresh Demand/Supply Return on ANY rung (M1/M3/M5/M15/H1/H4)
 input int    InpMinEntryRung     = 1;      // Lowest rung allowed for a multi-TF entry (1=M1 ... 6=H4)
@@ -3822,6 +3823,62 @@ input double InpBEAtrBuf         = 0.30; // Breakeven SL buffer for MOMENTUM tra
 input double InpBEAtrCampaign    = 0.50; // Breakeven SL buffer for CAMPAIGN trades (Asia/Close D=2/4 - wider: long slow builds wick deeper)
 input int    InpCampaignProtMin  = 120;  // QProt: age threshold (minutes) for CAMPAIGN trades before protection fires (vs InpQProtMinutes for momentum)
 
+input group "Letra37 EA - Deep-Audit Solutions (v13)"
+//--- HOUR BLOCKS: block ALL new entries during net-negative hours -----------------
+input bool   InpBlockHourGate    = true;                   // Block ALL new entries during statistically net-negative server hours
+input string InpBlockedHours     = "0,11,12,13,19,20,21,22"; // Blocked server hours (comma list)
+//--- SOLUTION 1: session size amplifier (highest-quality 15:00-16:00 window) -------
+input bool   InpSessAmplifier    = true;                   // 1.5x lot size for entries in the 15:00-16:00 quality window
+input int    InpSessAmpHour      = 15;                     // Server hour that receives the size amplifier
+input double InpSessAmpMult      = 1.5;                    // Lot multiplier in the amplifier hour
+//--- SOLUTION 2: SL-distance quality multiplier (10-20pt sweet spot) ---------------
+input bool   InpSLDistMult       = true;                   // 1.25x lot when SL distance is in the proven 10-20pt sweet spot
+input double InpSLSweetMinPts    = 10.0;                   // Sweet-spot SL distance min (price points)
+input double InpSLSweetMaxPts    = 20.0;                   // Sweet-spot SL distance max (price points)
+input double InpSLSweetMult      = 1.25;                   // Lot multiplier inside the sweet spot
+input double InpMaxSizeMult      = 2.0;                    // Hard cap on the COMBINED amplifier x sweet-spot multiplier
+//--- SOLUTION 3: dynamic SL cap for D=3/4 MOM (capital efficiency) -----------------
+input bool   InpD3SLCap          = true;                   // Floor a too-wide D=3/4 MOM structure SL to a tight cap
+input double InpD3SLCapPts        = 35.0;                  // Max SL distance for a D=3/4 MOM entry (price points)
+input double InpD3SLCapAtrMult    = 1.5;                   // Tight ATR placement used when the cap fires (xATR)
+//--- SOLUTION 4: regime detection / chop mode (Ownership Stability Index) ----------
+input bool   InpOSIChopMode      = true;                   // Ownership Stability Index chop-mode gate
+input int    InpOSIWindowDays     = 15;                    // Trading-day window for counting H4 ownership flips
+input int    InpOSIChopThresh     = 4;                     // >= this many H4 flips in the window => CHOP MODE
+input double InpChopD3SizeMult    = 0.5;                   // Chop mode: D=3/4 MOM size multiplier (reduce, do not block)
+input int    InpChopMaxTrades     = 5;                     // Chop mode: max new trades per day
+//--- SOLUTION 5 + 7: tiered & MFE-escalated ownership-transfer exit thresholds ------
+input bool   InpTieredExit       = true;                   // Raise the ownership-transfer exit threshold for quality signals / winners
+input double InpExitThreshD2MOM   = 80.0;                  // D=2/4 MOM ownership-transfer exit threshold % (hold through flickers)
+input bool   InpD2MomTFGate      = true;                   // D=2/4 MOM: opposing owner must be same/higher TF before exit
+input double InpMfeThr3R           = 75.0;                 // MFE 3-8R   -> exit threshold %
+input double InpMfeThr8R           = 85.0;                 // MFE 8-20R  -> exit threshold %
+input double InpMfeThr20R          = 90.0;                 // MFE >20R   -> exit threshold % (and require >= H4 opposing owner)
+//--- SOLUTION 6: SELL D=2/4 CAMP structural gate -----------------------------------
+input bool   InpSellCampGate     = true;                   // SELL CAMP requires H4 (and H1 proxy for D1) bearish ownership
+input double InpSellCampSLTighten = 0.75;                  // SELL CAMP SL distance multiplier (faster invalidation in macro-bull)
+input double InpSellCampHoldFrac  = 0.60;                  // SELL CAMP max-hold as fraction of campaign hold cap
+input int    InpCampMaxHoldBars   = 96;                    // Base campaign max-hold (bars) used for the SELL CAMP fraction
+//--- SOLUTION 8: same-hour re-entry cooldown ---------------------------------------
+input bool   InpReentryCooldown  = true;                   // Block same dir+depth re-entry after a sub-0.5R ownership exit
+input double InpCooldownRThresh   = 0.5;                   // Exit R below this arms the cooldown
+input int    InpCooldownBars      = 2;                     // Cooldown length (bars)
+//--- SOLUTION 10: Thursday D=3/4 MOM volume cap ------------------------------------
+input bool   InpThurD3Cap        = true;                   // Cap Thursday D=3/4 MOM entries (pre-Friday repositioning noise)
+input int    InpThurD3MaxTrades   = 10;                    // Max Thursday D=3/4 MOM entries
+//--- SOLUTION 9 support: FU entry rework guards (FU entries OFF by default) ---------
+input bool   InpFUReworkGuards   = true;                   // FU rework: require D>=2, FU-zone SL, and <=1 ATR proximity to the FU zone
+input double InpFUMaxDistAtr      = 1.0;                   // FU: skip when price is > this ATR from the FU zone tip/midpoint
+//--- POINT-BASED PARTIAL SYSTEM (replaces fixed-$ thresholds; scales with risk) ----
+input bool   InpRPartials        = true;                   // Point-based partial system L1-L5 (replaces fixed-$ levels)
+input double InpPartL1Pts         = 4.0;                   // L1 favorable points -> close L1 frac + move SL to breakeven
+input double InpPartL2Pts         = 8.0;                   // L2 favorable points -> close Ln frac
+input double InpPartL3Pts         = 16.0;                  // L3 favorable points -> close Ln frac
+input double InpPartL4Pts         = 22.0;                  // L4 favorable points -> close Ln frac + start trailing
+input double InpPartL5Pts         = 29.0;                  // L5 favorable points -> close Ln frac
+input double InpPartL1Frac        = 0.20;                  // L1 close fraction (of current volume)
+input double InpPartLnFrac        = 0.15;                  // L2-L5 close fraction (of current volume)
+
 //==================================================================
 // EA GLOBALS
 //==================================================================
@@ -3858,6 +3915,19 @@ bool     gMgQProtMode[];  // protection mode active (30-min triggered)
 bool     gMgQExit50[];    // escalation 50% partial already done (45-min)
 bool     gMgIsDeathEntry[];// true = entry came from death fast-path (churn fix)
 int      gMgTradeType[];   // 0=Campaign (Asia/Close D=2/4: patient multi-session), 1=Momentum (all others)
+//--- deep-audit per-ticket state (v13) ---
+int      gMgDepth[];       // ownerDeathSignals (D=2/3/4) at entry (0 for non-death entries)
+int      gMgOwnerRank[];   // curve-owner TF rank at entry (1=M1 .. 6=H4)
+double   gMgInitRisk[];    // initial risk in PRICE (|open-initSL|) -- R-proportional reference
+
+//--- deep-audit engine state (v13) ---
+double   gSizeMult      = 1.0;   // per-entry lot multiplier (session amplifier x SL sweet-spot x chop)
+int      gOSIDir[];              // last-N trading-day H4 ownership-direction snapshots (OSI)
+int      gOSIDayDir     = 0;     // latest non-zero H4 ownership direction seen this day
+datetime gCdUntil       = 0;     // re-entry cooldown active until this time
+int      gCdDir         = 0;     // cooled-down direction
+int      gCdDepth       = 0;     // cooled-down depth (D)
+int      gMomD3Today    = 0;     // D=3/4 MOM entries taken today (Thursday cap)
 
 //==================================================================
 // HELPERS
@@ -3912,7 +3982,86 @@ double CalcLot(const double entry,const double sl)
    double mpp=MoneyPerPointPerLot();
    if(slPts<1 || mpp<=0) return(NormalizeLot(InpFixedLot));
    double lot=riskMoney/(slPts*mpp);
+   lot*=gSizeMult;                                            // deep-audit: session amplifier x SL sweet-spot x chop multiplier
    return(NormalizeLot(lot));                                 // NormalizeLot enforces broker min/step and the InpMaxLot cap
+}
+
+//==================================================================
+// DEEP-AUDIT HELPERS (v13)
+//==================================================================
+//--- map a curve-owner TF name to a rank (1=M1 .. 8=W1) ---
+int OwnerRankOf(const string tf)
+{
+   if(tf=="M1")  return(1);
+   if(tf=="M3")  return(2);
+   if(tf=="M5")  return(3);
+   if(tf=="M15") return(4);
+   if(tf=="H1")  return(5);
+   if(tf=="H4")  return(6);
+   if(tf=="D1")  return(7);
+   if(tf=="W1")  return(8);
+   return(0);
+}
+
+//--- HOUR BLOCK: true when the current server hour is in the blocked list ---
+bool HourBlocked()
+{
+   if(!InpBlockHourGate) return(false);
+   MqlDateTime dt; TimeToStruct(TimeCurrent(),dt);
+   string parts[];
+   int k=StringSplit(InpBlockedHours,(ushort)',',parts);
+   for(int i=0;i<k;i++){
+      string p=parts[i]; StringTrimLeft(p); StringTrimRight(p);
+      if(StringLen(p)==0) continue;
+      if((int)StringToInteger(p)==dt.hour) return(true);
+   }
+   return(false);
+}
+
+//--- SOLUTIONS 1+2: per-entry lot multiplier (session amplifier x SL sweet-spot), capped ---
+double EntrySizeMult(const double slDistPts)
+{
+   double m=1.0;
+   MqlDateTime dt; TimeToStruct(TimeCurrent(),dt);
+   if(InpSessAmplifier && dt.hour==InpSessAmpHour) m*=InpSessAmpMult;                          // 15:00-16:00 quality window
+   if(InpSLDistMult && slDistPts>=InpSLSweetMinPts && slDistPts<=InpSLSweetMaxPts) m*=InpSLSweetMult; // 10-20pt SL sweet spot
+   if(m>InpMaxSizeMult) m=InpMaxSizeMult;                                                      // combined cap (e.g. 2.0x)
+   return(m);
+}
+
+//--- SOLUTION 3: floor a too-wide D=3/4 MOM structure SL to a tight cap ---
+double ApplyD3SLCap(const int dir,const double entry,const double sl,const int depth,const int tradeType)
+{
+   if(!InpD3SLCap) return(sl);
+   if(depth!=3 || tradeType!=1) return(sl);                  // D=3/4 MOM only (D=4 is blocked elsewhere; D=2 untouched)
+   double dist=MathAbs(entry-sl);
+   if(dist<=InpD3SLCapPts) return(sl);                       // structure SL already tight enough -> keep it (same signal)
+   double a=cur_atr; if(a<=0) a=10*_Point;
+   double capDist=MathMin(InpD3SLCapPts, InpD3SLCapAtrMult*a); // tighter of 35pt ceiling and 1.5 ATR
+   capDist=MathMax(capDist, MinStopDist()+_Point);           // never below broker minimum
+   return(NormPrice(dir==1? entry-capDist : entry+capDist));
+}
+
+//--- SOLUTION 4: CHOP MODE when H4 ownership flips too often in the trailing window ---
+bool IsChopMode()
+{
+   if(!InpOSIChopMode) return(false);
+   int n=ArraySize(gOSIDir), changes=0, prev=0;
+   for(int i=0;i<n;i++){
+      int d=gOSIDir[i];
+      if(d==0) continue;
+      if(prev!=0 && d!=prev) changes++;
+      prev=d;
+   }
+   return(changes>=InpOSIChopThresh);
+}
+
+//--- SOLUTION 8: true while a same dir+depth re-entry cooldown is active ---
+bool InCooldown(const int dir,const int depth)
+{
+   if(!InpReentryCooldown || gCdUntil<=0) return(false);
+   if(TimeCurrent()>=gCdUntil) return(false);
+   return(gCdDir==dir && gCdDepth==depth);
 }
 
 //--- ARC v2 apex builder (SYMPHONY port): uses the ARC inputs (declared in the EA section) and
@@ -3936,7 +4085,7 @@ void ComputeARC()
 
 //--- management memory ---
 int MgIndex(const ulong tk){ for(int q=0;q<ArraySize(gMgTicket);q++) if(gMgTicket[q]==tk) return(q); return(-1); }
-void MgRegister(const ulong tk,const double initSL,const double tp1,const int dir,const bool isDeathEntry=false,const int tradeType=1)
+void MgRegister(const ulong tk,const double initSL,const double tp1,const int dir,const bool isDeathEntry=false,const int tradeType=1,const int depth=0,const int ownerRank=0,const double initRisk=0.0)
 {
    if(MgIndex(tk)>=0) return;
    int s=ArraySize(gMgTicket);
@@ -3945,6 +4094,7 @@ void MgRegister(const ulong tk,const double initSL,const double tp1,const int di
    ArrayResize(gMgTrailing,s+1);ArrayResize(gMgTrailSL,s+1);
    ArrayResize(gMgEntryTime,s+1);ArrayResize(gMgMFE,s+1);ArrayResize(gMgMAE,s+1);
    ArrayResize(gMgQProtMode,s+1);ArrayResize(gMgQExit50,s+1);ArrayResize(gMgIsDeathEntry,s+1);ArrayResize(gMgTradeType,s+1);
+   ArrayResize(gMgDepth,s+1);ArrayResize(gMgOwnerRank,s+1);ArrayResize(gMgInitRisk,s+1);
    gMgTicket[s]=tk; gMgInitSL[s]=initSL; gMgTP1[s]=tp1; gMgPartialDone[s]=false; gMgBEDone[s]=false; gMgDir[s]=dir;
    gMgP1Done[s]=false; gMgP2Done[s]=false; gMgP3Done[s]=false; gMgP4Done[s]=false; gMgP5Done[s]=false;
    gMgTrailing[s]=false; gMgTrailSL[s]=0.0;
@@ -3953,6 +4103,7 @@ void MgRegister(const ulong tk,const double initSL,const double tp1,const int di
    gMgQProtMode[s]=false; gMgQExit50[s]=false;
    gMgIsDeathEntry[s]=isDeathEntry;
    gMgTradeType[s]=tradeType;
+   gMgDepth[s]=depth; gMgOwnerRank[s]=ownerRank; gMgInitRisk[s]=initRisk;
 }
 void MgCleanup()
 {
@@ -3964,6 +4115,7 @@ void MgCleanup()
          ArrayRemove(gMgEntryTime,q,1);ArrayRemove(gMgMFE,q,1);ArrayRemove(gMgMAE,q,1);
          ArrayRemove(gMgQProtMode,q,1);ArrayRemove(gMgQExit50,q,1);
          ArrayRemove(gMgIsDeathEntry,q,1);ArrayRemove(gMgTradeType,q,1);
+         ArrayRemove(gMgDepth,q,1);ArrayRemove(gMgOwnerRank,q,1);ArrayRemove(gMgInitRisk,q,1);
       }
    }
 }
@@ -4080,6 +4232,13 @@ void DailyRollover()
    datetime dayKey=(datetime)(dt.year*10000+dt.mon*100+dt.day);
    if(dayKey!=gDayStamp){
       gDayStamp=dayKey; gTradesToday=0;
+      gMomD3Today=0;                                   // SOLUTION 10: reset Thursday D=3/4 MOM counter
+      //--- SOLUTION 4 (OSI): record the prior day's final H4 ownership direction, keep a rolling window ---
+      int sz=ArraySize(gOSIDir);
+      ArrayResize(gOSIDir,sz+1);
+      gOSIDir[sz]=gOSIDayDir;
+      int w=MathMax(2,InpOSIWindowDays);
+      while(ArraySize(gOSIDir)>w) ArrayRemove(gOSIDir,0,1);
    }
 }
 
@@ -4353,6 +4512,9 @@ bool SymphonyTrigger(const int dir)
 
 void TryEnter()
 {
+   //--- HOUR BLOCK (deep-audit): impossible to bypass -- runs before ANY entry logic ---
+   if(HourBlocked()){ gEntryBlock="hour blocked (net-negative session)"; return; }
+   gSizeMult=1.0;                                   // reset per-entry lot multiplier
    int dir=DesiredDirection();
    bool aggressive=false, fuEntry=false, mtfEntry=false;
    // ================================================================
@@ -4384,18 +4546,32 @@ void TryEnter()
          if(InpBlockD2Tuesday && _isTuesday && cur_ownerDeathSignals<=2){ gEntryBlock="D=2/4 blocked on Tuesday"; return; }
          // Block news window 14:45-15:30 (data releases blow through tight SLs)
          if(_isNews){ gEntryBlock="news window blocked ("+IntegerToString(_eh)+":"+IntegerToString(_em)+")"; return; }
+         // HOUR BLOCK (belt-and-suspenders inside death fast-path)
+         if(HourBlocked()){ gEntryBlock="hour blocked (net-negative session)"; return; }
 
          // -- TRADE TYPE CLASSIFICATION (drives BE SL width + QProt threshold) --
          // Campaign (type 0): Asia/Close D=2/4 -- slow multi-session hold, needs wide BE
          // Momentum (type 1): all other confirmed entries -- session move, tighter mgmt
          int _tradeType = ((_isAsia || _isClose) && cur_ownerDeathSignals==2) ? 0 : 1;
 
+         // SOLUTION 8: same dir+depth re-entry cooldown after a sub-0.5R ownership exit
+         if(InCooldown(dir,cur_ownerDeathSignals)){ gEntryBlock="re-entry cooldown (D="+IntegerToString(cur_ownerDeathSignals)+")"; return; }
+         // SOLUTION 10: Thursday D=3/4 MOM volume cap (D=2/4 unrestricted)
+         if(InpThurD3Cap && _wd==4 && cur_ownerDeathSignals==3 && _tradeType==1 && gMomD3Today>=InpThurD3MaxTrades){
+            gEntryBlock="Thursday D=3/4 MOM cap ("+IntegerToString(gMomD3Today)+"/"+IntegerToString(InpThurD3MaxTrades)+")"; return; }
+         // SOLUTION 6: SELL D=2/4 CAMP structural gate -- require H4 (and H1 proxy for D1) bearish
+         if(InpSellCampGate && dir==-1 && _tradeType==0 && !(cur_dirH4==-1 && cur_dirH1==-1)){
+            gEntryBlock="SELL CAMP needs H4+H1 bearish"; return; }
+
          if(dir==1 && !InpTradeLongs){ gEntryBlock="longs off"; return; }
          if(dir==-1 && !InpTradeShorts){ gEntryBlock="shorts off"; return; }
          if(cur_invInvalidated){ gEntryBlock="invalidated"; return; }
          if(!SessionOK()){ gEntryBlock="session closed"; return; }
          int _maxT2=(InpSmallAccount&&InpSmallAcctMaxTrades>0)?(InpMaxTradesPerDay>0?MathMin(InpMaxTradesPerDay,InpSmallAcctMaxTrades):InpSmallAcctMaxTrades):InpMaxTradesPerDay;
-         if(_maxT2>0 && gTradesToday>=_maxT2){ gEntryBlock="max trades/day"; return; }
+         // SOLUTION 4: CHOP MODE clamps the daily trade ceiling
+         bool _chop=(InpOSIChopMode && IsChopMode());
+         if(_chop) _maxT2=(_maxT2>0? MathMin(_maxT2,InpChopMaxTrades) : InpChopMaxTrades);
+         if(_maxT2>0 && gTradesToday>=_maxT2){ gEntryBlock=(_chop?"chop-mode max trades/day":"max trades/day"); return; }
          if(InpMaxSpreadPoints>0){ long sp=(long)SymbolInfoInteger(_Symbol,SYMBOL_SPREAD); if(sp>InpMaxSpreadPoints){ gEntryBlock="spread "+IntegerToString((int)sp); return; } }
          int ownD=OwnPositionDir();
          if(ownD!=0 && ownD!=dir){
@@ -4410,15 +4586,27 @@ void TryEnter()
          double entryD=(dir==1?askD:bidD);
          gRecSizeMult=RecSizeMult();
          double slD=ComputeStructureSL(dir,entryD,false,false);
+         // SOLUTION 3: dynamic SL cap for D=3/4 MOM (floor a too-wide structural SL)
+         slD=ApplyD3SLCap(dir,entryD,slD,cur_ownerDeathSignals,_tradeType);
+         // SOLUTION 6: tighten SELL CAMP stop (faster invalidation in the macro-bull regime)
+         if(InpSellCampGate && dir==-1 && _tradeType==0){
+            double _td=MathAbs(entryD-slD)*InpSellCampSLTighten;
+            slD=NormPrice(bidD+_td);
+         }
+         // SOLUTIONS 1+2: session amplifier x SL sweet-spot lot multiplier
+         gSizeMult=EntrySizeMult(MathAbs(entryD-slD));
+         // SOLUTION 4: CHOP MODE reduces D=3/4 MOM exposure (do not block)
+         if(_chop && cur_ownerDeathSignals==3 && _tradeType==1) gSizeMult*=InpChopD3SizeMult;
          double lotD=CalcLot(entryD,slD);
          if(!MarginOK(dir,lotD,entryD)){ gEntryBlock="insufficient margin"; return; }
          string _typeTx=(_tradeType==0?"CAMP":"MOM");
          string cmtD=InpComment+" DEATH"+IntegerToString(cur_ownerDeathSignals)+" "+_typeTx;
          bool okD=(dir==1)?trade.Buy(lotD,_Symbol,askD,slD,0.0,cmtD):trade.Sell(lotD,_Symbol,bidD,slD,0.0,cmtD);
          if(!okD && MktClosed()) return;
-         MgRegister(trade.ResultOrder(),slD,NA,dir,true,_tradeType);
+         MgRegister(trade.ResultOrder(),slD,NA,dir,true,_tradeType,cur_ownerDeathSignals,OwnerRankOf(cur_curveOwner),MathAbs(entryD-slD));
          gTradesToday++; gEntryBlock="ENTERED DEATH"+IntegerToString(cur_ownerDeathSignals)+" "+_typeTx;
-         if(InpDebugEntries) Print("=== ENTRY DEATH ",(dir==1?"BUY":"SELL")," D=",cur_ownerDeathSignals,"/4 type=",_typeTx," @",DoubleToString(entryD,_Digits)," SL=",DoubleToString(slD,_Digits));
+         if(cur_ownerDeathSignals==3 && _tradeType==1) gMomD3Today++;   // SOLUTION 10 counter
+         if(InpDebugEntries) Print("=== ENTRY DEATH ",(dir==1?"BUY":"SELL")," D=",cur_ownerDeathSignals,"/4 type=",_typeTx," @",DoubleToString(entryD,_Digits)," SL=",DoubleToString(slD,_Digits)," lot=",DoubleToString(lotD,2)," sizeMult=",DoubleToString(gSizeMult,2),(_chop?" [CHOP]":""));
          return;
       }
    }
@@ -4428,7 +4616,18 @@ void TryEnter()
       if(InpFURequireBias && cb!=0 && ctx_fuDir!=cb){
          gEntryBlock="FU "+(ctx_fuDir==1?"buy":"sell")+" node opposes "+(cb==1?"bull":"bear")+" bias";
       } else {
-         dir=ctx_fuDir; aggressive=true; fuEntry=true;
+         //--- SOLUTION 9: FU rework guards (FU was 5/6 hard-SL without confirmation) ---
+         bool _fuOK=true; string _fuBlk="";
+         if(InpFUReworkGuards){
+            if(cur_ownerDeathSignals<2){ _fuOK=false; _fuBlk="FU needs D>=2 ownership death"; }
+            else {
+               double _fa=cur_atr>0?cur_atr:10*_Point;
+               double _fbid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
+               if(!naf(ctx_fuTip) && MathAbs(_fbid-ctx_fuTip)>InpFUMaxDistAtr*_fa){ _fuOK=false; _fuBlk="FU >"+DoubleToString(InpFUMaxDistAtr,1)+"ATR from zone"; }
+            }
+         }
+         if(_fuOK){ dir=ctx_fuDir; aggressive=true; fuEntry=true; }   // SL already keys off ctx_fuTip in ComputeStructureSL (FU-zone stop)
+         else gEntryBlock=_fuBlk;
       }
    }
    //--- MULTI-TF: a fresh Demand/Supply Return on ANY rung (M1..H4) -- the EA sees every timeframe ---
@@ -4550,6 +4749,7 @@ void TryEnter()
    double entry=(dir==1?ask:bid);
    gRecSizeMult=RecSizeMult();          // recursion-size-aware stop sizing (compression -> loop size)
    double slBase=ComputeStructureSL(dir,entry,fuEntry,mtfEntry);   // F72: stop BEYOND the actual structure price is reacting off
+   gSizeMult=EntrySizeMult(MathAbs(entry-slBase));                 // SOLUTIONS 1+2: session amplifier x SL sweet-spot
    double lot=CalcLot(entry,slBase);
    double tp=ComputeTP(dir,entry,slBase);
    //--- LIVE: don't send an order the account can't safely afford ---
@@ -4626,7 +4826,7 @@ void TryEnter()
             double _openP=PositionGetDouble(POSITION_PRICE_OPEN);
             double _risk =MathAbs(_openP-slBase); if(_risk<=0) _risk=(cur_atr>0?cur_atr:10*_Point);
             //--- SPEC AUDIT: no TP1/partial registration. Position registered for SL tracking only. ---
-            MgRegister(pt,psl,NA,dir);
+            MgRegister(pt,psl,NA,dir,false,1,cur_ownerDeathSignals,OwnerRankOf(cur_curveOwner),_risk);
             break;
          }
       }
@@ -4820,30 +5020,28 @@ void ManagePositions()
       } // end quality protection block
 
       //==============================================================
-      // PROFIT MANAGEMENT -- 5 levels, 20% each
-      // $900 -> 20% + breakeven SL
-      // $2300 -> 20%
-      // $4400 -> 20%
-      // $1600 -> 20%
-      // $3300 -> 20%
-      // $4500 -> 20%
-      // $6000 -> 20%
-      // $7000+ -> aggressive swing trail
+      // PROFIT MANAGEMENT -- POINT-BASED PARTIAL SYSTEM (deep-audit v13)
+      // Replaces the fixed-$ thresholds with favorable-excursion price points,
+      // so the ladder scales correctly as equity / lot size compound.
+      //   L1  4pt  -> close 20% + move SL to breakeven
+      //   L2  8pt  -> close 15%
+      //   L3 16pt  -> close 15%
+      //   L4 22pt  -> close 15% + start aggressive swing trail
+      //   L5 29pt  -> close 15%   (leaves a ~20% runner)
       //==============================================================
-      // posProfit and posLots already computed above in quality block
-      if(mi>=0 && posLots>0 && posProfit>0){
-         double closeLots=NormalizeLot(posLots*0.20);  // 20% of current position
-         if(closeLots<=0) closeLots=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
+      // favPts = favorable excursion in PRICE points
+      double favPts=(dir==1?(mkt-openP):(openP-mkt));
+      if(InpRPartials && mi>=0 && posLots>0 && favPts>0){
+         double minLotV=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
+         double closeL1=NormalizeLot(posLots*InpPartL1Frac); if(closeL1<=0) closeL1=minLotV;
+         double closeLn=NormalizeLot(posLots*InpPartLnFrac); if(closeLn<=0) closeLn=minLotV;
 
-         // Level 1 -- $900 profit: close 20% + move SL to breakeven
-         // BE SL uses ATR buffer (not 1 point): audit showed 88% of L1 trades wicked at 1-point BE.
-         // Campaign trades get wider buffer (0.5 ATR) -- slow builds retrace deeper before continuing.
-         // Momentum trades get 0.3 ATR -- tight enough to protect, wide enough to survive normal noise.
-         if(!gMgP1Done[mi] && posProfit>=900.0){
+         // Level 1 -- close 20% + move SL to breakeven (ATR-buffered: 88% of 1pt-BE trades wicked).
+         if(!gMgP1Done[mi] && favPts>=InpPartL1Pts){
             gMgP1Done[mi]=true;
-            if(closeLots<posLots && trade.PositionClosePartial(tk,closeLots))
-               if(InpDebugExits) Print("=== PARTIAL L1 @$900 closed ",DoubleToString(closeLots,2)," lots profit=",DoubleToString(posProfit,2));
-            double _beAtr=(mi>=0 && gMgTradeType[mi]==0) ? atr*InpBEAtrCampaign : atr*InpBEAtrBuf;
+            if(closeL1<posLots && trade.PositionClosePartial(tk,closeL1))
+               if(InpDebugExits) Print("=== PARTIAL L1 @",DoubleToString(favPts,1),"pt closed ",DoubleToString(closeL1,2)," lots");
+            double _beAtr=(gMgTradeType[mi]==0) ? atr*InpBEAtrCampaign : atr*InpBEAtrBuf;
             double beSL=(dir==1)? NormPrice(openP+_beAtr) : NormPrice(openP-_beAtr);
             if((dir==1&&beSL>curSL)||(dir==-1&&beSL<curSL)){
                double _minD=MinStopDist()+_Point;
@@ -4851,41 +5049,38 @@ void ManagePositions()
                if(_sideOK && trade.PositionModify(tk,beSL,0.0)){
                   curSL=beSL;
                   if(InpDebugExits) Print("=== BREAKEVEN SL moved to ",DoubleToString(beSL,_Digits),
-                     "  (type=",(gMgTradeType[mi]==0?"Campaign":"Momentum"),
-                     " buf=",DoubleToString(_beAtr,_Digits),")");
+                     "  (type=",(gMgTradeType[mi]==0?"Campaign":"Momentum")," buf=",DoubleToString(_beAtr,_Digits),")");
                }
             }
          }
-         // Level 2 -- $1600 profit: close 20%
-         else if(gMgP1Done[mi] && !gMgP2Done[mi] && posProfit>=1600.0){
+         // Level 2 -- close 15%
+         else if(gMgP1Done[mi] && !gMgP2Done[mi] && favPts>=InpPartL2Pts){
             gMgP2Done[mi]=true;
-            if(closeLots<posLots && trade.PositionClosePartial(tk,closeLots))
-               if(InpDebugExits) Print("=== PARTIAL L2 @$1600 closed ",DoubleToString(closeLots,2)," lots");
+            if(closeLn<posLots && trade.PositionClosePartial(tk,closeLn))
+               if(InpDebugExits) Print("=== PARTIAL L2 @",DoubleToString(favPts,1),"pt closed ",DoubleToString(closeLn,2)," lots");
          }
-         // Level 3 -- $3300 profit: close 20%
-         else if(gMgP2Done[mi] && !gMgP3Done[mi] && posProfit>=3300.0){
+         // Level 3 -- close 15%
+         else if(gMgP2Done[mi] && !gMgP3Done[mi] && favPts>=InpPartL3Pts){
             gMgP3Done[mi]=true;
-            if(closeLots<posLots && trade.PositionClosePartial(tk,closeLots))
-               if(InpDebugExits) Print("=== PARTIAL L3 @$3300 closed ",DoubleToString(closeLots,2)," lots");
+            if(closeLn<posLots && trade.PositionClosePartial(tk,closeLn))
+               if(InpDebugExits) Print("=== PARTIAL L3 @",DoubleToString(favPts,1),"pt closed ",DoubleToString(closeLn,2)," lots");
          }
-         // Level 4 -- $4500 profit: close 20%
-         else if(gMgP3Done[mi] && !gMgP4Done[mi] && posProfit>=4500.0){
+         // Level 4 -- close 15% + start trailing
+         else if(gMgP3Done[mi] && !gMgP4Done[mi] && favPts>=InpPartL4Pts){
             gMgP4Done[mi]=true;
-            if(closeLots<posLots && trade.PositionClosePartial(tk,closeLots))
-               if(InpDebugExits) Print("=== PARTIAL L4 @$4500 closed ",DoubleToString(closeLots,2)," lots");
+            if(closeLn<posLots && trade.PositionClosePartial(tk,closeLn))
+               if(InpDebugExits) Print("=== PARTIAL L4 @",DoubleToString(favPts,1),"pt closed ",DoubleToString(closeLn,2)," lots (trail armed)");
          }
-         // Level 5 -- $6000 profit: close 20%
-         else if(gMgP4Done[mi] && !gMgP5Done[mi] && posProfit>=6000.0){
+         // Level 5 -- close 15%
+         else if(gMgP4Done[mi] && !gMgP5Done[mi] && favPts>=InpPartL5Pts){
             gMgP5Done[mi]=true;
-            if(closeLots<posLots && trade.PositionClosePartial(tk,closeLots))
-               if(InpDebugExits) Print("=== PARTIAL L5 @$6000 closed ",DoubleToString(closeLots,2)," lots");
+            if(closeLn<posLots && trade.PositionClosePartial(tk,closeLn))
+               if(InpDebugExits) Print("=== PARTIAL L5 @",DoubleToString(favPts,1),"pt closed ",DoubleToString(closeLn,2)," lots");
          }
 
-         // Aggressive trailing -- activates once profit crosses $7000
-         // Uses swing structure (last 2 bars + 0.3 ATR buffer) -- tighter than ATR*2
-         if(!gMgTrailing[mi] && posProfit>=7000.0){
+         // Aggressive trailing -- activates at L4 (22pt). Uses last-2-bar swing + 0.3 ATR buffer.
+         if(!gMgTrailing[mi] && gMgP4Done[mi]){
             gMgTrailing[mi]=true;
-            // Seed trail at last 2-bar swing
             double seedSwing=(dir==1)?DBL_MAX:-DBL_MAX;
             for(int bb=1;bb<=2;bb++){
                if(dir==1){ double lo=iLow(_Symbol,_Period,bb);  if(lo>0&&lo<seedSwing) seedSwing=lo; }
@@ -4893,10 +5088,9 @@ void ManagePositions()
             }
             if(seedSwing==DBL_MAX||seedSwing==-DBL_MAX) seedSwing=(dir==1)?(mkt-atr*1.0):(mkt+atr*1.0);
             gMgTrailSL[mi]=(dir==1)?seedSwing-atr*0.30:seedSwing+atr*0.30;
-            if(InpDebugExits) Print("=== AGGRESSIVE TRAIL ON @$7000  seedSL=",DoubleToString(gMgTrailSL[mi],_Digits));
+            if(InpDebugExits) Print("=== AGGRESSIVE TRAIL ON @L4  seedSL=",DoubleToString(gMgTrailSL[mi],_Digits));
          }
          if(gMgTrailing[mi]){
-            // Update trail every bar: last 2-bar swing + 0.3 ATR buffer
             double swing=(dir==1)?DBL_MAX:-DBL_MAX;
             for(int bb=1;bb<=2;bb++){
                if(dir==1){ double lo=iLow(_Symbol,_Period,bb);  if(lo>0&&lo<swing) swing=lo; }
@@ -4911,7 +5105,7 @@ void ManagePositions()
                if(sideOK && trade.PositionModify(tk,newTrail,0.0)){
                   gMgTrailSL[mi]=newTrail;
                   if(InpDebugExits) Print("=== TRAIL SL -> ",DoubleToString(newTrail,_Digits),
-                     "  (swing=",DoubleToString(swing,_Digits),")  profit=$",DoubleToString(posProfit,0));
+                     "  (swing=",DoubleToString(swing,_Digits),")  fav=",DoubleToString(favPts,1),"pt");
                }
             }
          }
@@ -4920,6 +5114,17 @@ void ManagePositions()
       //--- minimum hold gate: never exit on the entry bar (noise) ---
       // heldBars already computed above (before QProt block)
       if(heldBars<InpMinHoldBars) continue;
+
+      //--- SOLUTION 6: SELL CAMP max-hold -- if the short campaign isn't progressing within
+      //  ~60% of the campaign hold window, exit (don't sit through a macro-bull retracement). ---
+      if(InpSellCampGate && mi>=0 && dir==-1 && gMgTradeType[mi]==0){
+         int _sellCampMaxHold=(int)(InpSellCampHoldFrac*InpCampMaxHoldBars);
+         if(_sellCampMaxHold>InpMinHoldBars && heldBars>=_sellCampMaxHold && rMult<InpCooldownRThresh){
+            DbgExit("sell-camp max-hold (not progressing, heldBars "+IntegerToString(heldBars)+"/"+IntegerToString(_sellCampMaxHold)+")",tk,dir,openP,mkt,rMult);
+            if(!trade.PositionClose(tk) && MktClosed()) return;
+            continue;
+         }
+      }
 
       //--- EXIT 1: OWNERSHIP TRANSFER -- the curve that owns price has fully transferred
       //  to the opposing direction. This means the campaign we entered is no longer dominant;
@@ -4932,9 +5137,30 @@ void ManagePositions()
          int _holdRequired = (mi>=0 && gMgIsDeathEntry[mi]) ? InpDeathMinHoldBars : InpMinHoldBars;
          bool _heldEnough = (heldBars >= _holdRequired);
          bool ownerOpposed=(cur_ownerDir!=0 && cur_ownerDir!=dir);
-         bool domHigh=(cur_domTransfer>=InpOwnerTransferThresh);
-         if(ownerOpposed && domHigh && _heldEnough){
-            DbgExit("ownership-transfer (owner "+cur_curveOwner+" "+f_waveDirLabel(cur_ownerDir)+" dom "+DoubleToString(cur_domTransfer,0)+"%)",tk,dir,openP,mkt,rMult);
+         //--- SOLUTIONS 5+7: tiered (by entry depth/type) + MFE-escalated exit threshold.
+         //  Hold quality signals and winners through ownership flickers; only a STRONGER
+         //  opposing dominance confirms a real transfer. The two effects compose (take the max). ---
+         double _exThr=InpOwnerTransferThresh;
+         bool   _tfGateOK=true;
+         if(InpTieredExit && mi>=0){
+            int _dep=gMgDepth[mi], _tt=gMgTradeType[mi];
+            if(_dep==2 && _tt==1) _exThr=MathMax(_exThr,InpExitThreshD2MOM);          // D=2/4 MOM holds through flickers
+            double _mfe=gMgMFE[mi];
+            double _mfeThr=(_mfe>20.0?InpMfeThr20R:_mfe>=8.0?InpMfeThr8R:_mfe>=3.0?InpMfeThr3R:0.0);
+            if(_mfeThr>_exThr) _exThr=_mfeThr;
+            //--- SOLUTION 5: D=2/4 MOM -- opposing owner must be same/higher TF before exit ---
+            if(InpD2MomTFGate && _dep==2 && _tt==1 && OwnerRankOf(cur_curveOwner)<gMgOwnerRank[mi]) _tfGateOK=false;
+            //--- SOLUTION 7: a 20R+ winner only exits on a clear opposing owner >= H4 ---
+            if(_mfe>20.0 && OwnerRankOf(cur_curveOwner)<OwnerRankOf("H4")) _tfGateOK=false;
+         }
+         bool domHigh=(cur_domTransfer>=_exThr);
+         if(ownerOpposed && domHigh && _tfGateOK && _heldEnough){
+            //--- SOLUTION 8: arm same dir+depth re-entry cooldown after a sub-0.5R ownership exit ---
+            if(InpReentryCooldown && rMult<InpCooldownRThresh){
+               gCdUntil=TimeCurrent()+(datetime)(InpCooldownBars*MathMax(PeriodSeconds(_Period),1));
+               gCdDir=dir; gCdDepth=(mi>=0?gMgDepth[mi]:0);
+            }
+            DbgExit("ownership-transfer (owner "+cur_curveOwner+" "+f_waveDirLabel(cur_ownerDir)+" dom "+DoubleToString(cur_domTransfer,0)+"% >= thr "+DoubleToString(_exThr,0)+"%)",tk,dir,openP,mkt,rMult);
             if(!trade.PositionClose(tk) && MktClosed()) return;
             continue;
          }
@@ -5089,6 +5315,7 @@ void OnTick()
       gLastBarTime=bt;
       gMktClosed=false;          // new bar -> market may have reopened; re-allow management/flip order actions
       ComputeEngine();          // full recompute -> sets cur_* for last closed bar
+      if(cur_dirH4!=0) gOSIDayDir=cur_dirH4;   // SOLUTION 4 (OSI): latest non-zero H4 ownership direction this day
       if(g_lastProcessed>=0){
          ManageExhaustionExit(); // SYMPHONY composite terminal-exhaustion exit (closed-bar)
          TryEnter();             // evaluate entry on the just-closed bar
