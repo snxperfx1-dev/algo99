@@ -3821,6 +3821,7 @@ input int    InpNewsMinEnd       = 30;    // News window: end minute
 input double InpBEAtrBuf         = 0.30; // Breakeven SL buffer for MOMENTUM trades (xATR). Old=1pt, now ~1-2 pts breathing room
 input double InpBEAtrCampaign    = 0.50; // Breakeven SL buffer for CAMPAIGN trades (Asia/Close D=2/4 - wider: long slow builds wick deeper)
 input int    InpCampaignProtMin  = 120;  // QProt: age threshold (minutes) for CAMPAIGN trades before protection fires (vs InpQProtMinutes for momentum)
+input bool   InpBlockHourGate    = true;  // Block low-EV hours per quant audit: 00h,12h,13h,20h,21h,22h hard-blocked; 19h D=3/4 MOM blocked (CAMP allowed)
 
 //==================================================================
 // EA GLOBALS
@@ -4384,6 +4385,24 @@ void TryEnter()
          if(InpBlockD2Tuesday && _isTuesday && cur_ownerDeathSignals<=2){ gEntryBlock="D=2/4 blocked on Tuesday"; return; }
          // Block news window 14:45-15:30 (data releases blow through tight SLs)
          if(_isNews){ gEntryBlock="news window blocked ("+IntegerToString(_eh)+":"+IntegerToString(_em)+")"; return; }
+
+         // -- QUANT-AUDIT SESSION HOUR BLOCKS -----------------------------------------------
+         // Derived from 6-month true P&L analysis (exit R + hard SL cost @ -0.9R + BE stop @ +0.3R).
+         // Hard blocks — ALL entry types blocked:
+         //   00h : net -0.92R  (2 hard SLs on 5 trades — low-volume noise)
+         //   12h : net -0.92R  (36% WR, 13 hard SLs — London midday chop)
+         //   13h : net -2.61R  (17 hard SLs — worst hour, pre-NY stop-hunt window)
+         //   20h : EOD fade    (live slippage-adjusted P&L unreliable, liquidity thinning)
+         //   21h : EOD         (0.25R/entry live-adjusted, 6 tight SL entries, marginal)
+         //   22h : Rollover    (defining 29.51R winner has 8.1pt SL — blown on live spread)
+         // Partial block — D=3/4 MOM only, D=2/4 CAMP still runs (72.7% WR at 19h):
+         //   19h D=3/4 MOM: 31.6% WR, 15 losses out of 19 exits — hour held up by 2 outlier wins
+         if(InpBlockHourGate){
+            bool _hardBlock=(_eh==0||_eh==12||_eh==13||_eh==20||_eh==21||_eh==22);
+            bool _mom19    =(_eh==19 && cur_ownerDeathSignals==3);
+            if(_hardBlock){ gEntryBlock="hour blocked "+IntegerToString(_eh)+"h (quant audit)"; return; }
+            if(_mom19    ){ gEntryBlock="19h D=3/4 MOM blocked (31% WR — CAMP runs)"; return; }
+         }
 
          // -- TRADE TYPE CLASSIFICATION (drives BE SL width + QProt threshold) --
          // Campaign (type 0): Asia/Close D=2/4 -- slow multi-session hold, needs wide BE
