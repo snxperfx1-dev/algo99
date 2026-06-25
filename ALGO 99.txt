@@ -4591,6 +4591,7 @@ void TryEnter()
          // SOLUTION 6: tighten SELL CAMP stop (faster invalidation in the macro-bull regime)
          if(InpSellCampGate && dir==-1 && _tradeType==0){
             double _td=MathAbs(entryD-slD)*InpSellCampSLTighten;
+            _td=MathMax(_td, MinStopDist()+_Point);     // never tighter than the broker minimum stop
             slD=NormPrice(bidD+_td);
          }
          // SOLUTIONS 1+2: session amplifier x SL sweet-spot lot multiplier
