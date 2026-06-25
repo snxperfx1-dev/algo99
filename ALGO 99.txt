@@ -3701,7 +3701,7 @@ input bool          InpUseKeyLevelStop  = true;         // Anchor SL beyond the 
 input int           InpSwingLookback    = 20;           // Bars scanned for the protective key swing high/low
 input double        InpKeyLevelBufATR   = 0.80;         // Buffer beyond the key high/low (xATR) - gold wicks are large
 input double        InpMaxSLAtr         = 10.0;         // Safety cap on total SL distance (xATR) — applies to CAMP entries; MOM uses InpMomSLHardBlock
-input double        InpMomSLHardBlock   = 100.0;        // D=3/4 MOM hard block: if M5-derived SL exceeds this many price-pts, entry is skipped (no valid risk level; lot-scale handles 0-100pt range)
+input double        InpMomSLHardBlock   = 100.0;        // All entries hard block: if M5-derived SL exceeds this many price-pts, entry is skipped (no valid risk level; lot-scale handles 0-100pt range)
 input bool          InpCompSizing       = true;         // Recursion-size-aware sizing: compression sets stop distance + partial timing (wide loop=wider stop, failure-swing=tighter)
 
 input group "Letra37 EA - Take Profit"
@@ -4504,22 +4504,17 @@ void TryEnter()
          double entryD=(dir==1?askD:bidD);
          gRecSizeMult=RecSizeMult();
          // -- SL SELECTION -----------------------------------------------------------------------
-         // D=3/4 MOM: ComputeMomentumSL searches M5 for the post-impulse consolidation pivot.
-         //   Fixes the spike-bottom problem: M15 structural swing was anchoring 70pt SLs to
-         //   liquidity-sweep wicks instead of the 15pt post-impulse structure that actually
-         //   tests whether the momentum signal remains valid.
-         // D=2/4 CAMP: keeps ComputeStructureSL — wide structural SL is correct for campaigns
-         //   positioned at key demand/supply levels across multiple sessions.
-         double slD;
-         if(cur_ownerDeathSignals==3){
-            slD=ComputeMomentumSL(dir,entryD);
+         // ALL death entries (D=2/4 CAMP and D=3/4 MOM) now use ComputeMomentumSL.
+         // Applies to both: M5 post-impulse pivot finds the tightest relevant structure,
+         // avoiding the spike-bottom problem where M15 structural swing places SLs at
+         // liquidity-sweep wicks 50-130pts away from the actual entry invalidation point.
+         slD=ComputeMomentumSL(dir,entryD);
+         {
             double _slDist=MathAbs(entryD-slD);
             if(_slDist>InpMomSLHardBlock*_Point){
-               gEntryBlock="D=3 MOM SL "+DoubleToString(_slDist/_Point,1)+"pt > "+DoubleToString(InpMomSLHardBlock,0)+"pt hard cap";
+               gEntryBlock="SL "+DoubleToString(_slDist/_Point,1)+"pt > "+DoubleToString(InpMomSLHardBlock,0)+"pt hard cap";
                return;
             }
-         } else {
-            slD=ComputeStructureSL(dir,entryD,false,false);
          }
          double lotD=CalcLot(entryD,slD);
          // -- EXPLICIT LOT ENFORCEMENT -----------------------------------------------------------
@@ -4684,8 +4679,20 @@ void TryEnter()
    double ask=sym.Ask(), bid=sym.Bid();
    double entry=(dir==1?ask:bid);
    gRecSizeMult=RecSizeMult();          // recursion-size-aware stop sizing (compression -> loop size)
-   double slBase=ComputeStructureSL(dir,entry,fuEntry,mtfEntry);   // F72: stop BEYOND the actual structure price is reacting off
+   double slBase=ComputeMomentumSL(dir,entry);   // M5 post-impulse structure SL — applies to all entry types
+   {  // hard cap: block if SL still exceeds maximum permitted distance
+      double _slDist=MathAbs(entry-slBase);
+      if(_slDist>InpMomSLHardBlock*_Point){ gEntryBlock="SL "+DoubleToString(_slDist/_Point,1)+"pt > "+DoubleToString(InpMomSLHardBlock,0)+"pt hard cap"; return; }
+   }
    double lot=CalcLot(entry,slBase);
+   // Explicit lot enforcement: guarantee risk-% regardless of SL width (mirrors death fast-path)
+   {
+      double _rPct=(InpSmallAccount?InpSmallAcctRiskPct:InpRiskPercent);
+      double _rMoney=gAccount.Equity()*_rPct/100.0;
+      double _slPts=MathAbs(entry-slBase)/_Point;
+      double _mpp=MoneyPerPointPerLot();
+      if(_slPts>0 && _mpp>0){ double _enfLot=NormalizeLot(_rMoney/(_slPts*_mpp)); if(lot>_enfLot) lot=_enfLot; }
+   }
    double tp=ComputeTP(dir,entry,slBase);
    //--- LIVE: don't send an order the account can't safely afford ---
    if(!MarginOK(dir,lot,entry)){ gEntryBlock="insufficient free margin / margin level unsafe"; return; }
@@ -4702,7 +4709,7 @@ void TryEnter()
    bool ok=false;
    if(InpUseLimitEntry && !naf(cur_doeEntryMid)){
       double lim=NormPrice(cur_doeEntryMid);
-      double slL=ComputeStructureSL(dir,lim,fuEntry,mtfEntry);
+      double slL=ComputeMomentumSL(dir,lim);
       double tpL=ComputeTP(dir,lim,slL);
       double lotL=CalcLot(lim,slL);
       datetime exp=(InpPendingExpiryBars>0)?(TimeCurrent()+(datetime)(InpPendingExpiryBars*PeriodSeconds(_Period))):0;
