@@ -3825,6 +3825,8 @@ input double InpBEAtrBuf         = 0.30; // Breakeven SL buffer for MOMENTUM tra
 input double InpBEAtrCampaign    = 0.50; // Breakeven SL buffer for CAMPAIGN trades (Asia/Close D=2/4 - wider: long slow builds wick deeper)
 input int    InpCampaignProtMin  = 120;  // QProt: age threshold (minutes) for CAMPAIGN trades before protection fires (vs InpQProtMinutes for momentum)
 input bool   InpBlockHourGate    = true;  // Block low-EV hours per quant audit: 00h,12h,13h,19h,20h,21h,22h all hard-blocked
+input double InpMacroGeomMin     = 70.0;  // Death entry guard: H4 wave-progress must be >=this% before counter-trend entry allowed (H4 wp<70=trend not exhausted=block)
+input double InpMacroDomMax      = 60.0;  // Death entry guard: H4 dominance must be <=this% before counter-trend entry allowed (H4 dom>60=H4 in control=block)
 
 //==================================================================
 // EA GLOBALS
@@ -4455,6 +4457,29 @@ void TryEnter()
    if(cur_ownerDeathSignals >= 2){
       int _macDeath = (cur_dirH4!=0)?cur_dirH4:(cur_dirH1!=0)?cur_dirH1:0;
       if(_macDeath != 0 && dir==0) dir = -_macDeath;  // dying macro -> oppose it
+      // -- H4 GEOMETRY GUARD -----------------------------------------------
+      // Before firing a counter-trend entry, the H4 owner curve must be near
+      // exhaustion. If H4 has high dominance AND low wave-progress, it is still
+      // a live, dominant trend — sub-wave death signals on M1/M5 are noise
+      // inside that trend, not genuine ownership transfers.
+      //
+      // Root cause of June 2026 crash: gold fell 369pts in H4 bear. The algo
+      // fired 28 BUY entries over 8 days (Jun 5-12) because M1/M5 bullish
+      // sub-waves triggered death signals. H4 was nowhere near exhausted.
+      // Every buy was stopped out; losses at peak equity (~£300k) = ~£69k.
+      //
+      // Guard: allow counter-trend entry ONLY when H4 has used ≥InpMacroGeomMin%
+      // of its geometry (wave progress) AND dominance has fallen ≤InpMacroDomMax%.
+      // Both must be true simultaneously — wave near end + owner losing control.
+      if(_macDeath != 0 && cur_dirH4 != 0){
+         double _h4WP  = cur_cv_wp[5];   // H4 wave progress 0-100% (index 5 = H4)
+         double _h4Dom = cur_cv_dom[5];  // H4 dominance 0-100%
+         bool _h4Exhausted = (_h4WP >= InpMacroGeomMin) && (_h4Dom <= InpMacroDomMax);
+         if(!_h4Exhausted){
+            gEntryBlock="H4 not exhausted: wp="+DoubleToString(_h4WP,0)+"% dom="+DoubleToString(_h4Dom,0)+"% (need wp>="+DoubleToString(InpMacroGeomMin,0)+"% dom<="+DoubleToString(InpMacroDomMax,0)+"%)";
+            return;
+         }
+      }
       // death fast-path: go straight to order, skip all intermediate gates
       if(_macDeath != 0){
          // -- SIGNAL QUALITY + SESSION GATES (from deep audit) ----------
