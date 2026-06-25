@@ -4416,7 +4416,22 @@ void TryEnter()
          string cmtD=InpComment+" DEATH"+IntegerToString(cur_ownerDeathSignals)+" "+_typeTx;
          bool okD=(dir==1)?trade.Buy(lotD,_Symbol,askD,slD,0.0,cmtD):trade.Sell(lotD,_Symbol,bidD,slD,0.0,cmtD);
          if(!okD && MktClosed()) return;
-         MgRegister(trade.ResultOrder(),slD,NA,dir,true,_tradeType);
+         //--- BUGFIX: register against the REAL position ticket, not trade.ResultOrder() (order ticket).
+         //  MgCleanup uses posinfo.SelectByTicket() which is by POSITION ticket -- a mismatched
+         //  registration is wiped on the very next tick, after which ManagePositions() finds mi=-1
+         //  and silently skips ALL profit management (L1-L5 partials, BE, QProt, $7K trail).
+         //  Mirror the normal path: scan PositionsTotal() to find the just-opened position.
+         if(okD){
+            for(int _qd=PositionsTotal()-1;_qd>=0;_qd--){
+               ulong _ptd=PositionGetTicket(_qd);
+               if(_ptd==0) continue;
+               if(PositionGetInteger(POSITION_MAGIC)==(long)InpMagic && PositionGetString(POSITION_SYMBOL)==_Symbol){
+                  double _psld=PositionGetDouble(POSITION_SL);
+                  MgRegister(_ptd,_psld,NA,dir,true,_tradeType);
+                  break;
+               }
+            }
+         }
          gTradesToday++; gEntryBlock="ENTERED DEATH"+IntegerToString(cur_ownerDeathSignals)+" "+_typeTx;
          if(InpDebugEntries) Print("=== ENTRY DEATH ",(dir==1?"BUY":"SELL")," D=",cur_ownerDeathSignals,"/4 type=",_typeTx," @",DoubleToString(entryD,_Digits)," SL=",DoubleToString(slD,_Digits));
          return;
