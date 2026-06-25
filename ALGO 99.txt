@@ -4645,6 +4645,17 @@ void TryEnter()
       if(cur_invInvalidated){ gEntryBlock="invalidated"; return; }
    }
    if(!SessionOK()){ gEntryBlock="session closed"; return; }
+   // Hour gate — mirrors the death fast-path block. Applies to ALL normal-path entries
+   // (FU, MTF, aggressive, arrow) which would otherwise bypass InpBlockHourGate entirely
+   // since that check lives inside the death fast-path conditional above.
+   if(InpBlockHourGate){
+      MqlDateTime _npDte; TimeToStruct(TimeCurrent(),_npDte);
+      int _nph=_npDte.hour;
+      bool _nphBlock=(_nph==0||_nph==12||_nph==13||_nph==20||_nph==21||_nph==22);
+      bool _nph19mom=(_nph==19 && cur_ownerDeathSignals==3);
+      if(_nphBlock){ gEntryBlock="hour blocked "+IntegerToString(_nph)+"h (quant audit)"; return; }
+      if(_nph19mom ){ gEntryBlock="19h D=3/4 MOM blocked (31% WR — CAMP runs)"; return; }
+   }
    int _maxTrades=(InpSmallAccount && InpSmallAcctMaxTrades>0)
                   ? (InpMaxTradesPerDay>0? MathMin(InpMaxTradesPerDay,InpSmallAcctMaxTrades) : InpSmallAcctMaxTrades)
                   : InpMaxTradesPerDay;
