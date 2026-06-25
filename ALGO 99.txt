@@ -1439,6 +1439,7 @@ void ProcessBar(const int i,const double &o[],const double &h[],const double &l[
    double currentToFlipMid=(!naf(g_flipTop)&&!naf(g_flipBot))?MathAbs(cl-(g_flipTop+g_flipBot)/2.0):atr*4.0;
    double currentToExtreme=direction==1?MathAbs(nz(g_cycleHigh,cl+atr)-cl):MathAbs(cl-nz(g_cycleLow,cl-atr));
    double _posNormDen=fmax2(waveTotalRange,atr*0.5);
+   if(_posNormDen<=0.0) _posNormDen=1e-10;  // zero-divide guard: fires during backtest warmup when both waveTotalRange and ATR are uninitialised
    double posDistToCreation   =fmin2(currentToExtreme/_posNormDen*100.0,100.0);
    double posDistToDemand     =fmin2(currentToFlipMid/_posNormDen*100.0,100.0);
 
@@ -2989,6 +2990,7 @@ void ResetState()
    g_huntMode=0;g_huntActivatedBar=-1;g_huntDemandHi=NA;g_huntDemandLo=NA;
    cur_ownerDeathSignals=0;
    ArrayFree(gMgTicket);ArrayFree(gMgInitSL);ArrayFree(gMgTP1);ArrayFree(gMgPartialDone);ArrayFree(gMgBEDone);ArrayFree(gMgDir);
+   ArrayFree(gMgInitRisk);
    ArrayFree(gMgP1Done);ArrayFree(gMgP2Done);ArrayFree(gMgP3Done);ArrayFree(gMgP4Done);ArrayFree(gMgP5Done);
    ArrayFree(gMgTrailing);ArrayFree(gMgTrailSL);
    ArrayFree(gMgEntryTime);ArrayFree(gMgMFE);ArrayFree(gMgMAE);ArrayFree(gMgQProtMode);ArrayFree(gMgQExit50);
@@ -3821,6 +3823,9 @@ input int    InpNewsMinEnd       = 30;    // News window: end minute
 input double InpBEAtrBuf         = 0.30; // Breakeven SL buffer for MOMENTUM trades (xATR). Old=1pt, now ~1-2 pts breathing room
 input double InpBEAtrCampaign    = 0.50; // Breakeven SL buffer for CAMPAIGN trades (Asia/Close D=2/4 - wider: long slow builds wick deeper)
 input int    InpCampaignProtMin  = 120;  // QProt: age threshold (minutes) for CAMPAIGN trades before protection fires (vs InpQProtMinutes for momentum)
+input bool   InpBlockHourGate    = true;   // Block low-EV hours: 00h,11h,12h,13h,19h,20h,21h,22h (quant audit)
+input double InpMacroGeomMin     = 70.0;   // H4 geometry guard: H4 wave-progress must be >=this% before counter-trend death entry (H4 not exhausted = block)
+input double InpMacroDomMax      = 60.0;   // H4 geometry guard: H4 dominance must be <=this% before counter-trend death entry (H4 still dominant = block)
 
 //==================================================================
 // EA GLOBALS
@@ -3841,14 +3846,15 @@ bool     gMktClosed     = false; // set when a management/flip order is rejected
 datetime eaT[]; double eaO[],eaH[],eaL[],eaC[],eaVol[];
 
 //--- per-ticket management memory ---
-// 5 partial-close levels (dollars profit): 900, 2300, 4400, 6400, 8600 -> 20% each
+// 5 partial-close levels (R-proportional): 0.8R/1.6R/3.2R/4.4R/6.0R -> 20%/15%/15%/15%+trail/15%
 ulong  gMgTicket[]; double gMgInitSL[]; double gMgTP1[]; bool gMgPartialDone[]; bool gMgBEDone[]; int gMgDir[];
-bool   gMgP1Done[];  // $900  -- 20% close + move SL to breakeven
-bool   gMgP2Done[];  // $2300 -- 20% close
-bool   gMgP3Done[];  // $4400 -- 20% close
-bool   gMgP4Done[];  // $6400 -- 20% close
-bool   gMgP5Done[];  // $8600 -- 20% close + activate trailing stop
-bool   gMgTrailing[];// trailing stop active (after $8600 hit)
+double gMgInitRisk[]; // initial dollar risk per position — drives R-proportional partial thresholds
+bool   gMgP1Done[];  // 0.8R — 20% close + move SL to breakeven
+bool   gMgP2Done[];  // 1.6R — 15% close
+bool   gMgP3Done[];  // 3.2R — 15% close
+bool   gMgP4Done[];  // 4.4R — 15% close + activate trailing
+bool   gMgP5Done[];  // 6.0R — 15% close
+bool   gMgTrailing[];// trailing stop active (activates at L4)
 double gMgTrailSL[]; // last trailing SL price
 //--- 30-min quality protection per-ticket state ---
 datetime gMgEntryTime[];  // wall-clock time of entry (for minute-age)
@@ -3941,6 +3947,7 @@ void MgRegister(const ulong tk,const double initSL,const double tp1,const int di
    if(MgIndex(tk)>=0) return;
    int s=ArraySize(gMgTicket);
    ArrayResize(gMgTicket,s+1);ArrayResize(gMgInitSL,s+1);ArrayResize(gMgTP1,s+1);ArrayResize(gMgPartialDone,s+1);ArrayResize(gMgBEDone,s+1);ArrayResize(gMgDir,s+1);
+   ArrayResize(gMgInitRisk,s+1);
    ArrayResize(gMgP1Done,s+1);ArrayResize(gMgP2Done,s+1);ArrayResize(gMgP3Done,s+1);ArrayResize(gMgP4Done,s+1);ArrayResize(gMgP5Done,s+1);
    ArrayResize(gMgTrailing,s+1);ArrayResize(gMgTrailSL,s+1);
    ArrayResize(gMgEntryTime,s+1);ArrayResize(gMgMFE,s+1);ArrayResize(gMgMAE,s+1);
@@ -3948,6 +3955,13 @@ void MgRegister(const ulong tk,const double initSL,const double tp1,const int di
    gMgTicket[s]=tk; gMgInitSL[s]=initSL; gMgTP1[s]=tp1; gMgPartialDone[s]=false; gMgBEDone[s]=false; gMgDir[s]=dir;
    gMgP1Done[s]=false; gMgP2Done[s]=false; gMgP3Done[s]=false; gMgP4Done[s]=false; gMgP5Done[s]=false;
    gMgTrailing[s]=false; gMgTrailSL[s]=0.0;
+   // Compute initial dollar risk — SL distance × lots × pip value — for R-proportional partials
+   { double _op=0,_lts=0;
+     if(posinfo.SelectByTicket(tk)){ _op=posinfo.PriceOpen(); _lts=posinfo.Volume(); }
+     double _sd=(_op>0&&initSL>0)?MathAbs(_op-initSL)/_Point:0.0;
+     double _mpp=MoneyPerPointPerLot();
+     gMgInitRisk[s]=(_sd>0&&_lts>0&&_mpp>0)?_sd*_lts*_mpp:900.0;
+   }
    // quality protection initial state
    gMgEntryTime[s]=TimeCurrent(); gMgMFE[s]=0.0; gMgMAE[s]=0.0;
    gMgQProtMode[s]=false; gMgQExit50[s]=false;
@@ -3959,6 +3973,7 @@ void MgCleanup()
    for(int q=ArraySize(gMgTicket)-1;q>=0;q--){
       if(!posinfo.SelectByTicket(gMgTicket[q])){
          ArrayRemove(gMgTicket,q,1);ArrayRemove(gMgInitSL,q,1);ArrayRemove(gMgTP1,q,1);ArrayRemove(gMgPartialDone,q,1);ArrayRemove(gMgBEDone,q,1);ArrayRemove(gMgDir,q,1);
+         ArrayRemove(gMgInitRisk,q,1);
          ArrayRemove(gMgP1Done,q,1);ArrayRemove(gMgP2Done,q,1);ArrayRemove(gMgP3Done,q,1);ArrayRemove(gMgP4Done,q,1);ArrayRemove(gMgP5Done,q,1);
          ArrayRemove(gMgTrailing,q,1);ArrayRemove(gMgTrailSL,q,1);
          ArrayRemove(gMgEntryTime,q,1);ArrayRemove(gMgMFE,q,1);ArrayRemove(gMgMAE,q,1);
@@ -4353,6 +4368,18 @@ bool SymphonyTrigger(const int dir)
 
 void TryEnter()
 {
+   // ================================================================
+   // HOUR GATE — absolute first check, before every path (death/normal/FU/MTF)
+   // Blocked hours from quant audit: 00h,11h,12h,13h,19h,20h,21h,22h
+   // ================================================================
+   if(InpBlockHourGate){
+      MqlDateTime _hDte; TimeToStruct(TimeCurrent(),_hDte);
+      int _hh=_hDte.hour;
+      if(_hh==0||_hh==11||_hh==12||_hh==13||_hh==19||_hh==20||_hh==21||_hh==22){
+         gEntryBlock="hour blocked "+IntegerToString(_hh)+"h"; return;
+      }
+   }
+
    int dir=DesiredDirection();
    bool aggressive=false, fuEntry=false, mtfEntry=false;
    // ================================================================
@@ -4363,6 +4390,20 @@ void TryEnter()
    if(cur_ownerDeathSignals >= 2){
       int _macDeath = (cur_dirH4!=0)?cur_dirH4:(cur_dirH1!=0)?cur_dirH1:0;
       if(_macDeath != 0 && dir==0) dir = -_macDeath;  // dying macro -> oppose it
+      // -- H4 GEOMETRY GUARD --------------------------------------------------
+      // Block counter-trend death entries when H4 is still a live dominant trend.
+      // Root cause of June 2026 crash: 28 BUYs into 369pt H4 bear freefall.
+      // Allow counter-trend entry ONLY when H4 is near exhaustion:
+      //   wave-progress >= InpMacroGeomMin (most geometry consumed)
+      //   AND dominance <= InpMacroDomMax  (owner losing control)
+      if(_macDeath != 0 && cur_dirH4 != 0){
+         double _h4WP  = cur_cv_wp[5];   // H4 wave progress (index 5 = H4)
+         double _h4Dom = cur_cv_dom[5];  // H4 dominance
+         if(!((_h4WP >= InpMacroGeomMin) && (_h4Dom <= InpMacroDomMax))){
+            gEntryBlock="H4 not exhausted wp="+DoubleToString(_h4WP,0)+"% dom="+DoubleToString(_h4Dom,0)+"%";
+            return;
+         }
+      }
       // death fast-path: go straight to order, skip all intermediate gates
       if(_macDeath != 0){
          // -- SIGNAL QUALITY + SESSION GATES (from deep audit) ----------
@@ -4529,6 +4570,14 @@ void TryEnter()
       if(cur_invInvalidated){ gEntryBlock="invalidated"; return; }
    }
    if(!SessionOK()){ gEntryBlock="session closed"; return; }
+   // Hour gate — mirrors top-of-TryEnter check for all normal-path entries
+   if(InpBlockHourGate){
+      MqlDateTime _npDte; TimeToStruct(TimeCurrent(),_npDte);
+      int _nph=_npDte.hour;
+      if(_nph==0||_nph==11||_nph==12||_nph==13||_nph==19||_nph==20||_nph==21||_nph==22){
+         gEntryBlock="hour blocked "+IntegerToString(_nph)+"h"; return;
+      }
+   }
    int _maxTrades=(InpSmallAccount && InpSmallAcctMaxTrades>0)
                   ? (InpMaxTradesPerDay>0? MathMin(InpMaxTradesPerDay,InpSmallAcctMaxTrades) : InpSmallAcctMaxTrades)
                   : InpMaxTradesPerDay;
@@ -4820,29 +4869,26 @@ void ManagePositions()
       } // end quality protection block
 
       //==============================================================
-      // PROFIT MANAGEMENT -- 5 levels, 20% each
-      // $900 -> 20% + breakeven SL
-      // $2300 -> 20%
-      // $4400 -> 20%
-      // $1600 -> 20%
-      // $3300 -> 20%
-      // $4500 -> 20%
-      // $6000 -> 20%
-      // $7000+ -> aggressive swing trail
+      // PROFIT MANAGEMENT — R-proportional partial system (5 levels)
+      // L1: 0.8R → close 20% + breakeven SL
+      // L2: 1.6R → close 15%
+      // L3: 3.2R → close 15%
+      // L4: 4.4R → close 15% + activate trailing
+      // L5: 6.0R → close 15%
+      // Scales with account equity and position size (R = initial risk $)
       //==============================================================
-      // posProfit and posLots already computed above in quality block
       if(mi>=0 && posLots>0 && posProfit>0){
-         double closeLots=NormalizeLot(posLots*0.20);  // 20% of current position
-         if(closeLots<=0) closeLots=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
+         double _1R=(mi>=0 && gMgInitRisk[mi]>0) ? gMgInitRisk[mi] : 900.0;
+         double closeLots20=NormalizeLot(posLots*0.20);  // L1: 20%
+         double closeLots15=NormalizeLot(posLots*0.15);  // L2-L5: 15%
+         if(closeLots20<=0) closeLots20=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
+         if(closeLots15<=0) closeLots15=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
 
-         // Level 1 -- $900 profit: close 20% + move SL to breakeven
-         // BE SL uses ATR buffer (not 1 point): audit showed 88% of L1 trades wicked at 1-point BE.
-         // Campaign trades get wider buffer (0.5 ATR) -- slow builds retrace deeper before continuing.
-         // Momentum trades get 0.3 ATR -- tight enough to protect, wide enough to survive normal noise.
-         if(!gMgP1Done[mi] && posProfit>=900.0){
+         // Level 1 -- 0.8R: close 20% + move SL to breakeven
+         if(!gMgP1Done[mi] && posProfit>=_1R*0.8){
             gMgP1Done[mi]=true;
-            if(closeLots<posLots && trade.PositionClosePartial(tk,closeLots))
-               if(InpDebugExits) Print("=== PARTIAL L1 @$900 closed ",DoubleToString(closeLots,2)," lots profit=",DoubleToString(posProfit,2));
+            if(closeLots20<posLots && trade.PositionClosePartial(tk,closeLots20))
+               if(InpDebugExits) Print("=== PARTIAL L1 @0.8R ($",DoubleToString(_1R*0.8,0),") closed ",DoubleToString(closeLots20,2)," lots");
             double _beAtr=(mi>=0 && gMgTradeType[mi]==0) ? atr*InpBEAtrCampaign : atr*InpBEAtrBuf;
             double beSL=(dir==1)? NormPrice(openP+_beAtr) : NormPrice(openP-_beAtr);
             if((dir==1&&beSL>curSL)||(dir==-1&&beSL<curSL)){
@@ -4856,45 +4902,44 @@ void ManagePositions()
                }
             }
          }
-         // Level 2 -- $1600 profit: close 20%
-         else if(gMgP1Done[mi] && !gMgP2Done[mi] && posProfit>=1600.0){
+         // Level 2 -- 1.6R: close 15%
+         else if(gMgP1Done[mi] && !gMgP2Done[mi] && posProfit>=_1R*1.6){
             gMgP2Done[mi]=true;
-            if(closeLots<posLots && trade.PositionClosePartial(tk,closeLots))
-               if(InpDebugExits) Print("=== PARTIAL L2 @$1600 closed ",DoubleToString(closeLots,2)," lots");
+            if(closeLots15<posLots && trade.PositionClosePartial(tk,closeLots15))
+               if(InpDebugExits) Print("=== PARTIAL L2 @1.6R ($",DoubleToString(_1R*1.6,0),") closed ",DoubleToString(closeLots15,2)," lots");
          }
-         // Level 3 -- $3300 profit: close 20%
-         else if(gMgP2Done[mi] && !gMgP3Done[mi] && posProfit>=3300.0){
+         // Level 3 -- 3.2R: close 15%
+         else if(gMgP2Done[mi] && !gMgP3Done[mi] && posProfit>=_1R*3.2){
             gMgP3Done[mi]=true;
-            if(closeLots<posLots && trade.PositionClosePartial(tk,closeLots))
-               if(InpDebugExits) Print("=== PARTIAL L3 @$3300 closed ",DoubleToString(closeLots,2)," lots");
+            if(closeLots15<posLots && trade.PositionClosePartial(tk,closeLots15))
+               if(InpDebugExits) Print("=== PARTIAL L3 @3.2R ($",DoubleToString(_1R*3.2,0),") closed ",DoubleToString(closeLots15,2)," lots");
          }
-         // Level 4 -- $4500 profit: close 20%
-         else if(gMgP3Done[mi] && !gMgP4Done[mi] && posProfit>=4500.0){
+         // Level 4 -- 4.4R: close 15% + activate trailing stop
+         else if(gMgP3Done[mi] && !gMgP4Done[mi] && posProfit>=_1R*4.4){
             gMgP4Done[mi]=true;
-            if(closeLots<posLots && trade.PositionClosePartial(tk,closeLots))
-               if(InpDebugExits) Print("=== PARTIAL L4 @$4500 closed ",DoubleToString(closeLots,2)," lots");
+            if(closeLots15<posLots && trade.PositionClosePartial(tk,closeLots15))
+               if(InpDebugExits) Print("=== PARTIAL L4 @4.4R ($",DoubleToString(_1R*4.4,0),") closed ",DoubleToString(closeLots15,2)," lots + trailing ON");
+            // Activate trailing on remaining position
+            if(!gMgTrailing[mi]){
+               gMgTrailing[mi]=true;
+               double seedSwing=(dir==1)?DBL_MAX:-DBL_MAX;
+               for(int bb=1;bb<=2;bb++){
+                  if(dir==1){ double lo=iLow(_Symbol,_Period,bb);  if(lo>0&&lo<seedSwing) seedSwing=lo; }
+                  else       { double hi=iHigh(_Symbol,_Period,bb); if(hi>0&&hi>seedSwing) seedSwing=hi; }
+               }
+               if(seedSwing==DBL_MAX||seedSwing==-DBL_MAX) seedSwing=(dir==1)?(mkt-atr):(mkt+atr);
+               gMgTrailSL[mi]=(dir==1)?seedSwing-atr*0.30:seedSwing+atr*0.30;
+               if(InpDebugExits) Print("=== TRAIL ACTIVATED @4.4R  seedSL=",DoubleToString(gMgTrailSL[mi],_Digits));
+            }
          }
-         // Level 5 -- $6000 profit: close 20%
-         else if(gMgP4Done[mi] && !gMgP5Done[mi] && posProfit>=6000.0){
+         // Level 5 -- 6.0R: close 15%
+         else if(gMgP4Done[mi] && !gMgP5Done[mi] && posProfit>=_1R*6.0){
             gMgP5Done[mi]=true;
-            if(closeLots<posLots && trade.PositionClosePartial(tk,closeLots))
-               if(InpDebugExits) Print("=== PARTIAL L5 @$6000 closed ",DoubleToString(closeLots,2)," lots");
+            if(closeLots15<posLots && trade.PositionClosePartial(tk,closeLots15))
+               if(InpDebugExits) Print("=== PARTIAL L5 @6.0R ($",DoubleToString(_1R*6.0,0),") closed ",DoubleToString(closeLots15,2)," lots");
          }
 
-         // Aggressive trailing -- activates once profit crosses $7000
-         // Uses swing structure (last 2 bars + 0.3 ATR buffer) -- tighter than ATR*2
-         if(!gMgTrailing[mi] && posProfit>=7000.0){
-            gMgTrailing[mi]=true;
-            // Seed trail at last 2-bar swing
-            double seedSwing=(dir==1)?DBL_MAX:-DBL_MAX;
-            for(int bb=1;bb<=2;bb++){
-               if(dir==1){ double lo=iLow(_Symbol,_Period,bb);  if(lo>0&&lo<seedSwing) seedSwing=lo; }
-               else       { double hi=iHigh(_Symbol,_Period,bb); if(hi>0&&hi>seedSwing) seedSwing=hi; }
-            }
-            if(seedSwing==DBL_MAX||seedSwing==-DBL_MAX) seedSwing=(dir==1)?(mkt-atr*1.0):(mkt+atr*1.0);
-            gMgTrailSL[mi]=(dir==1)?seedSwing-atr*0.30:seedSwing+atr*0.30;
-            if(InpDebugExits) Print("=== AGGRESSIVE TRAIL ON @$7000  seedSL=",DoubleToString(gMgTrailSL[mi],_Digits));
-         }
+         // Trailing stop — activated at L4 (4.4R); continues updating here every bar
          if(gMgTrailing[mi]){
             // Update trail every bar: last 2-bar swing + 0.3 ATR buffer
             double swing=(dir==1)?DBL_MAX:-DBL_MAX;
