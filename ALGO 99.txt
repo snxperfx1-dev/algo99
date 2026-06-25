@@ -4419,6 +4419,18 @@ bool SymphonyTrigger(const int dir)
 
 void TryEnter()
 {
+   // ================================================================
+   // HOUR GATE -- ABSOLUTE FIRST CHECK. Before death path, normal path,
+   // FU, MTF, aggressive, or any other entry route. Nothing can bypass
+   // a check at the very first line of TryEnter.
+   // ================================================================
+   if(InpBlockHourGate){
+      MqlDateTime _hDte; TimeToStruct(TimeCurrent(),_hDte);
+      int _hh=_hDte.hour;
+      if(_hh==0||_hh==12||_hh==13||_hh==20||_hh==21||_hh==22){ gEntryBlock="hour blocked "+IntegerToString(_hh)+"h (quant audit)"; return; }
+      if(_hh==19 && cur_ownerDeathSignals==3){ gEntryBlock="19h D=3/4 MOM blocked (31% WR — CAMP runs)"; return; }
+   }
+
    int dir=DesiredDirection();
    bool aggressive=false, fuEntry=false, mtfEntry=false;
    // ================================================================
